@@ -5,6 +5,7 @@
   (:require [leiningen.core.user :as user]
             [leiningen.core.classpath :as classpath]
             [leiningen.core.test.helper :refer [abort-msg]]
+            [leiningen.test.helper :as lthelper]
             [leiningen.core.utils :as utils]
             [clojure.java.io :as io]))
 
@@ -39,7 +40,11 @@
                                [clucy/clucy "0.2.2" :exclusions [[org.clojure/clojure]]]
                                [lancet/lancet "1.0.1"]
                                [robert/hooke "1.1.2"]
-                               [stencil/stencil "0.2.0"]],
+                               [stencil/stencil "0.2.0"]
+                               [org.clojure/tools.nrepl "0.2.3"
+                                :exclusions [[org.clojure/clojure]]]
+                               [clojure-complete/clojure-complete "0.2.3"
+                                :exclusions [[org.clojure/clojure]]]],
                :twelve 12 ; testing unquote
 
                :repositories [["central" {:url "http://repo1.maven.org/maven2/"
@@ -52,15 +57,28 @@
       (is (= v (k actual))))
     (doseq [[k path] paths
             :when (string? path)]
-      (is (= (str (:root actual) "/" path)
+      (is (= (lthelper/pathify (str (:root actual) "/" path))
              (k actual))))
     (doseq [[k path] paths
             :when (coll? path)]
-      (is (= (for [p path] (str (:root actual) "/" p))
+      (is (= (for [p path] (lthelper/pathify (str (:root actual) "/" p)))
              (k actual))))))
 
 ;; TODO: test omit-default
 ;; TODO: test reading project that doesn't def project
+
+(deftest test-retain-profile-metadata
+  (let [actual (read (.getFile (io/resource "profile-metadata.clj")))
+        profiles (:profiles actual)]
+    (is (true? (-> profiles :bar :dependencies meta :please-keep-me)))
+    (is (true? (-> profiles :bar :repositories meta :replace)))
+    (is (true? (-> profiles :baz :dependencies meta :hello)))
+    (is (true? (-> profiles :baz :repositories meta :displace)))))
+
+(deftest test-alias-in-profiles
+  (let [actual (read (.getFile (io/resource "profile-metadata.clj")))]
+    (is (= ["my" "java" "opts"]
+           (-> actual :profiles :baz :jvm-opts)))))
 
 (deftest test-merge-profile-displace-replace
   (let [test-profiles {:carmine {:foo [3 4]}
@@ -207,7 +225,48 @@
       (is (= '(constantly false)
              (-> (make {:test-selectors {:default '(constantly false)}})
                  (merge-profiles [:base])
-                 :test-selectors :default))))))
+                 :test-selectors :default))))
+    (testing "that IObjs can be compared with non-IObjs without crashing"
+      (is (= :keyword
+             (-> (make {:test-selectors {:default :keyword}})
+                 (merge-profiles [:base])
+                 :test-selectors :default)))
+      (is (= [1 2]
+             (-> (make (test-project
+                        {:foo ^:replace [1 2]
+                         :profiles
+                         {:bar {:foo 100}}}))
+                 (merge-profiles [:bar])
+                 :foo)))
+      (is (= [1 2]
+             (-> (make (test-project
+                        {:foo 100
+                         :profiles
+                         {:bar {:foo ^:replace [1 2]}}}))
+                 (merge-profiles [:bar])
+                 :foo)))
+      (is (= "string"
+             (-> (make (test-project
+                        {:foo "string"
+                         :profiles
+                         {:bar {:foo ^:displace [1 2]}}}))
+                 (merge-profiles [:bar])
+                 :foo)))
+      (is (= "string"
+             (-> (make (test-project
+                        {:foo ^:displace [1 2]
+                         :profiles
+                         {:bar {:foo "string"}}}))
+                 (merge-profiles [:bar])
+                 :foo))))
+    (testing "that IObjs keep their metadata when compared to non-IObjs"
+      (is (= {:frob true}
+             (-> (make (test-project
+                        {:foo 100
+                         :profiles
+                         {:bar {:foo ^{:replace true, :frob true} [1 2]}}}))
+                 (merge-profiles [:bar])
+                 :foo meta))))))
 
 (def test-profiles (atom {:qa {:resource-paths ["/etc/myapp"]}
                           :test {:resource-paths ["test/hi"]}
@@ -224,14 +283,14 @@
                        (project-with-profiles-meta
                          p
                          (merge @test-profiles (:profiles p))))]
-    (is (= ["/etc/myapp" "test/hi" "blue-resources" "resources"]
+    (is (= (vec (map lthelper/fix-path-delimiters ["/etc/myapp" "test/hi" "blue-resources" "resources"]))
            (-> (make
                 (test-project
                  {:resource-paths ["resources"]
                   :profiles {:blue {:resource-paths ["blue-resources"]}}}))
                (merge-profiles [:blue :tes :qa])
                :resource-paths)))
-    (is (= ["/etc/myapp" "test/hi" "blue-resources"]
+    (is (= (vec (map lthelper/fix-path-delimiters ["/etc/myapp" "test/hi" "blue-resources"]))
            (-> (make
                 (test-project
                  {:resource-paths ^:displace ["resources"]
@@ -363,19 +422,30 @@
        {:plugins '[[lein-foo "1.2.3" :hooks false :middleware false]]}
        '() '()))
 
-;; (deftest test-add-profiles
-;;   (let [expected-result {:dependencies [] :profiles {:a1 {:src-paths ["a1/"]}
-;;                                                      :a2 {:src-paths ["a2/"]}}}]
-;;     (is (= expected-result
-;;            (-> {:dependencies []}
-;;                (add-profiles {:a1 {:src-paths ["a1/"]}
-;;                               :a2 {:src-paths ["a2/"]}}))))
-;;     (is (= expected-result
-;;            (-> {:dependencies []}
-;;                (add-profiles {:a1 {:src-paths ["a1/"]}
-;;                               :a2 {:src-paths ["a2/"]}})
-;;                meta
-;;                :without-profiles)))))
+(deftest test-add-profiles
+  (let [expected-result {:dependencies [] :profiles {:a1 {:src-paths ["a1/"]}
+                                                     :a2 {:src-paths ["a2/"]}}}]
+    (is (= expected-result
+           (-> {:dependencies []}
+               (add-profiles {:a1 {:src-paths ["a1/"]}
+                              :a2 {:src-paths ["a2/"]}}))))
+    (is (= expected-result
+           (-> {:dependencies []}
+               (add-profiles {:a1 {:src-paths ["a1/"]}
+                              :a2 {:src-paths ["a2/"]}})
+               meta
+               :without-profiles)))
+    (is (nil?
+         (-> {:dependencies []}
+             (add-profiles {:a1 {:src-paths ["a1/"]}
+                            :a2 {:src-paths ["a2/"]}})
+             :src-paths)))
+    (is (= ["a1"]
+           (-> {:dependencies []}
+               (add-profiles {:a1 {:src-paths ["a1/"]}
+                              :a2 {:src-paths ["a2/"]}})
+               (merge-profiles [:a1])
+               :src-paths)))))
 
 (deftest test-merge-anon-profiles
   (is (= {:A 1, :C 3}
@@ -420,6 +490,15 @@
                             :c {:C 3}}})
                (merge-profiles [:a :b :c {:D 4}])
                (unmerge-profiles [:b {:D 4}])
+               (dissoc :profiles))))
+    (is (= expected
+           (-> (make-project
+                {:profiles {:a {:A 1}
+                            :b {:B 2}
+                            :c {:C 3}
+                            :foo [:b]}})
+               (merge-profiles [:a :b :c])
+               (unmerge-profiles [:foo])
                (dissoc :profiles))))))
 
 (deftest test-dedupe-deps
@@ -430,6 +509,15 @@
                                [org.clojure/clojure "1.3.0" :classifier "sources"]
                                [org.clojure/clojure "1.3.0"]]})
              (:dependencies)))))
+
+(deftest test-dedupe-non-group-deps
+  (is (= '[[foo/foo "1.1"]]
+        (-> (make-project
+              {:dependencies empty-dependencies
+               :profiles {:a {:dependencies '[[foo "1.0"]]}
+                          :b {:dependencies '[[foo "1.1"]]}}})
+          (merge-profiles [:a :b])
+          (:dependencies)))))
 
 (deftest test-warn-user-repos
   (if (System/getenv "LEIN_SUPPRESS_USER_LEVEL_REPO_WARNINGS")

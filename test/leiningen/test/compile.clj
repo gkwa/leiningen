@@ -6,7 +6,8 @@
         [leiningen.compile]
         [leiningen.test.helper :only [sample-project delete-file-recursively
                                       sample-failing-project
-                                      tricky-name-project]])
+                                      tricky-name-project
+                                      more-gen-classes-project]])
   (:require [leiningen.core.eval :as eval]
             [leiningen.core.main :as main]))
 
@@ -14,23 +15,32 @@
                       (delete-file-recursively
                        (file "test_projects" "sample" "target") true)
                       (delete-file-recursively
-                       (file "test_projects" "sample_failing" "target") true)
+                       (file "test_projects" "sample-failing" "target") true)
                       (f)))
 
-(deftest test-compile
+(deftest ^:online test-compile
   (compile sample-project "nom.nom.nom")
   (is (.exists (file "test_projects" "sample" "target"
                      "classes" "nom" "nom" "nom.class")))
   (is (thrown? Exception (compile sample-failing-project))))
 
-(deftest test-compile-all
+(deftest ^:online test-compile-all
   (compile sample-project ":all")
   (is (.exists (file "test_projects" "sample" "target"
                      "classes" "nom" "nom" "nom.class"))))
 
+(deftest test-compile-regex
+  (compile more-gen-classes-project "#\"\\.ba.$\"")
+  (is (.exists (file "test_projects" "more-gen-classes" "target"
+                     "classes" "more_gen_classes" "bar.class")))
+  (is (.exists (file "test_projects" "more-gen-classes" "target"
+                     "classes" "more_gen_classes" "baz.class")))
+  (is (not (.exists (file "test_projects" "more-gen-classes" "target"
+                          "classes" "more_gen_classes" "foo.class")))))
+
 (def eip-check (atom false))
 
-(deftest test-plugin
+(deftest ^:online test-plugin
   (reset! eip-check false)
   (eval/eval-in-project (assoc sample-project
                           :eval-in :leiningen
@@ -39,7 +49,7 @@
                         `(reset! eip-check true))
   (is @eip-check))
 
-(deftest test-cleared-transitive-aot
+(deftest ^:online test-cleared-transitive-aot
   (compile (assoc sample-project :clean-non-project-classes true) "nom.nom.nom")
   (eval/eval-in-project sample-project '(require 'nom.nom.nom))
   (let [classes (seq (.list (file "test_projects" "sample" "target"
@@ -52,20 +62,20 @@
   (is (not (.exists (file "test_projects" "sample" "target"
                           "classes" "sample2" "alt.class")))))
 
-(deftest test-cleared-transitive-aot-by-regexes
+(deftest ^:online test-cleared-transitive-aot-by-regexes
   (compile (assoc sample-project :clean-non-project-classes [#"core"])
-           "nom.nom.nom")
+           "nom.nom.check")
   (let [classes (seq (.list (file "test_projects" "sample" "target"
                                   "classes" "nom" "nom")))]
-    (doseq [r [#"nom\$fn__\d+.class" #"nom\$loading__\d+__auto__.class"
-               #"nom\$_main.class" #"nom.class" #"nom__init.class"]]
+    (doseq [r [#"check\$loading__\d+__auto__.class"
+               #"check\$_main.class" #"check.class" #"check__init.class"]]
       (is (some (partial re-find r) classes) (format "missing %s" r))))
   (is (not (.exists (file "test_projects" "sample" "target"
                           "classes" "sample2" "core.class"))))
   (is (.exists (file "test_projects" "sample" "target" "classes"
                      "sample2" "alt__init.class"))))
 
-(deftest test-injection
+(deftest ^:online test-injection
   (eval/eval-in-project (assoc sample-project
                           :injections ['(do (ns inject.stuff)
                                             (def beef :hot))])
@@ -73,3 +83,22 @@
 
 ;; (deftest test-compile-java-main
 ;;   (compile dev-deps-project))
+
+
+(deftest bad-aot-test
+  (is (re-find #"does\.not\.exist|does\/not\/exist"
+               (with-out-str
+                 (binding [*err* *out*]
+                   (try
+                     (compile (assoc sample-project
+                                :aot '[does.not.exist]))
+                     (catch clojure.lang.ExceptionInfo _)))))))
+
+(deftest compilation-specs-tests
+  (is (= '[foo bar] (compilation-specs ["foo" "bar"])))
+  (is (= [:all] (compilation-specs [":all"]) (compilation-specs [:all])))
+  (is (every? #'leiningen.compile/regex?
+              (compilation-specs ["#\"foo\"" #"bar" "#\"baz\""])))
+  (testing "that regexes are compiled first"
+    (let [spec (compilation-specs '[foo #"baz" bar #"quux"])]
+      (is (every? symbol? (drop-while #'leiningen.compile/regex? spec))))))

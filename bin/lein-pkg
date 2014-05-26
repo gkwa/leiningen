@@ -4,7 +4,7 @@
 # It has all the cross-platform stuff stripped out as well as the
 # logic for running from a source checkout and self-install/upgrading.
 
-export LEIN_VERSION="2.1.0-SNAPSHOT"
+export LEIN_VERSION="2.4.0-SNAPSHOT"
 
 if [ `whoami` = "root" ] && [ "$LEIN_ROOT" = "" ]; then
     echo "WARNING: You're currently running as root; probably by accident."
@@ -76,13 +76,20 @@ export JVM_OPTS="${JVM_OPTS:-"$JAVA_OPTS"}"
 
 if ([ "$LEIN_FAST_TRAMPOLINE" != "" ] || [ -r .lein-fast-trampoline ]) &&
     [ -r project.clj ]; then
-    INPUTS="$@ $(cat project.clj) $(cat "$LEIN_HOME/profiles.clj")"
+    INPUTS="$@ $(cat project.clj) $(test -f "$LEIN_HOME/profiles.clj" && cat "$LEIN_HOME/profiles.clj")"
     INPUT_CHECKSUM=$(echo $INPUTS | shasum - | cut -f 1 -d " ")
     # Just don't change :target-path in project.clj, mkay?
     TRAMPOLINE_FILE="target/trampolines/$INPUT_CHECKSUM"
 else
     TRAMPOLINE_FILE="/tmp/lein-trampoline-$$"
     trap "rm -f $TRAMPOLINE_FILE" EXIT
+fi
+
+if [ "$1" = "upgrade" ]; then
+    echo "This version of Leiningen was installed with a package manager, but"
+    echo "the upgrade task is intended for manual installs. Please use your"
+    echo "package manager's built-in upgrade facilities instead."
+    exit 1
 fi
 
 if [ "$INPUT_CHECKSUM" != "" ] && [ -r "$TRAMPOLINE_FILE" ]; then

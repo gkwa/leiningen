@@ -9,7 +9,8 @@
   "Check syntax and warn on reflection."
   ([project]
      (let [source-files (map io/file (:source-paths project))
-           nses (b/namespaces-on-classpath :classpath source-files)
+           nses (b/namespaces-on-classpath :classpath source-files
+                                           :ignore-unreadable? false)
            action `(let [failures# (atom 0)]
                      (doseq [ns# '~nses]
                        ;; load will add the .clj, so can't use ns/path-for.
@@ -23,7 +24,10 @@
                            (catch ExceptionInInitializerError e#
                              (swap! failures# inc)
                              (.printStackTrace e#)))))
-                     (System/exit @failures#))]
-       (try (eval/eval-in-project project action)
-            (catch clojure.lang.ExceptionInfo e
-              (main/abort "Failed."))))))
+                     (if-not (zero? @failures#)
+                       (System/exit @failures#)))]
+       (try
+         (binding [eval/*pump-in* false]
+           (eval/eval-in-project project action))
+         (catch clojure.lang.ExceptionInfo e
+           (main/abort "Failed."))))))

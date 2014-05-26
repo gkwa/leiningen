@@ -2,24 +2,25 @@
 
 set -e -u
 
-CURRENT_VERSION=$1
-RELEASE_VERSION=$2
+RELEASE_VERSION=$1
+CURRENT_VERSION="$RELEASE_VERSION-SNAPSHOT"
 
 for f in bin/lein bin/lein-pkg bin/lein.bat project.clj leiningen-core/project.clj; do
     sed -i s/$CURRENT_VERSION/$RELEASE_VERSION/ $f
 done
 
-rm -rf target classes leiningen-core/target leiningen-core/classes
+rm -rf target classes leiningen-core/target leiningen-core/classes leiningen-core/lib
 rm -rf $HOME/.lein/self-installs/leiningen-$RELEASE_VERSION-standalone.jar
 
+LEIN_ROOT=$PWD
+
 cd leiningen-core
-sed -i s/\;\;:aot/:aot/ project.clj
-lein1 clean, install
-sed -i s/:aot/\;\;:aot/ project.clj
+lein do clean, install
 cd ..
 
-bin/lein with-profile release uberjar
-cp target/leiningen-$RELEASE_VERSION-standalone.jar $HOME/.lein/self-installs
+bin/lein uberjar
+RELEASE_JAR=$PWD/target/leiningen-$RELEASE_VERSION-standalone.jar
+cp $RELEASE_JAR $HOME/.lein/self-installs
 
 cp bin/lein /tmp/lein-$RELEASE_VERSION
 cd /tmp
@@ -34,19 +35,29 @@ time ../lein-$RELEASE_VERSION run -m clojure.main/main -e nil
 time ../lein-$RELEASE_VERSION run -m clojure.main/main -e nil
 time ../lein-$RELEASE_VERSION run -m clojure.main/main -e nil
 
-echo "If these are under 3 seconds then you should be set to upload"
-echo "target/leiningen-$RELEASE_VERSION-standalone.jar to S3."
-echo "s3c me put -P target/leiningen-2.0.0-$RELEASE_VERSION-standalone.jar s3://leiningen/downloads/"
-echo "Also deploy this release of leiningen-core to Clojars."
+echo "Are these acceptable times? (~3s) [Y\n]"
+read CONTINUE
+case "$CONTINUE" in
+    y|Y|"")
+        gpg -ab $RELEASE_JAR
+        # s3c is an s3cmd wrapper for people who don't hate security:
+        # https://github.com/technomancy/dotfiles/blob/master/bin/s3c
+        s3c lein put -P $RELEASE_JAR s3://leiningen/downloads/
+        s3c lein put -P $RELEASE_JAR.asc s3://leiningen/downloads/
+        echo "Uploaded";;
+    *)
+        echo "Aborted."
+        exit 1;;
+esac
 
-# Still manual for now:
-# git commit -a -m "Release $RELEASE_VERSION"
-# git tag -s $RELEASE_VERSION -m "Release $RELEASE_VERSION"
-# cd leiningen-core; lein do clean, deploy clojars, marg
-# deploy leiningen itself
-# scp docs/uberdoc.html leiningen.org:leiningen.org/reference.html
-# git push && git push --tags
-# git checkout preview && git merge master && git push
-# Drop version back to SNAPSHOT
+cd $LEIN_ROOT
 
-# TODO: update windows install instructions on leiningen.org for 2.1
+git commit -a -m "Release $RELEASE_VERSION"
+
+rm -rf target leiningen-core/target
+echo "Test self-install."
+echo "If things are good, run this:"
+echo "$ git tag -s $RELEASE_VERSION -m \"Release $RELEASE_VERSION\""
+echo "$ git push && git push --tags && git push origin master:stable"
+echo "$ lein deploy clojars"
+echo "$ cd leiningen-core && lein deploy clojars"

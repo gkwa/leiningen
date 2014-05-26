@@ -13,9 +13,9 @@ first message to that address will subscribe you without being posted.
 
 Please report issues on the
 [GitHub issue tracker](https://github.com/technomancy/leiningen/issues)
-or the mailing list. Personal email addresses are inappropriate for
-bug reports. Simpler issues appropriate for first-time contributors
-looking to help out are tagged "newbie".
+or the mailing list. Sending bug reports to personal email addresses
+is inappropriate. Simpler issues appropriate for first-time
+contributors looking to help out are tagged "newbie".
 
 Patches are preferred as patches from `git format-patch` on the
 mailing list or as GitHub pull requests. Please use topic branches
@@ -37,12 +37,21 @@ See the
 and `doc/PLUGINS.md` for more details on how Leiningen's codebase is
 structured.
 
+Try to be aware of the conventions in the existing code, except the
+one where we don't write tests. Make a reasonable attempt to avoid
+lines longer than 80 columns or function bodies longer than 20
+lines. Don't use `when` unless it's for side-effects. Don't introduce
+new protocols. Use `^:internal` metadata to mark vars which can't be
+private but shouldn't be considered part of the public API.
+
 ## Bootstrapping
 
 You don't need to "build" Leiningen per se, but when you're developing on a
 checkout you will need to get its dependencies in place. Just use a stable
 release of Leiningen to run `lein bootstrap` (an alias for `lein do install,
-classpath .lein-bootstrap`) in the `leiningen-core` directory.
+classpath .lein-bootstrap`) in the `leiningen-core` directory. If you want to
+use or develop the `search` functionality on master, you also have to run `lein
+compile` in the root (`leiningen`) directory.
 
 If you don't have a stable `lein` installed, simply check out the
 `stable` branch and copy `bin/lein` to somewhere on your `$PATH`, then
@@ -53,8 +62,10 @@ If you want to use your development copy for everyday usage, symlink
 stable installation to keep them from interfering; typically you can
 name that `lein2` or `lein-stable`.
 
-When the dependencies change you may have to do `rm .lein-classpath`
-in the project root, though in most cases this can be done automatically.
+When dependencies in Leiningen change, you may have to do `rm .lein-classpath`
+in the project root, though in most cases this can be done automatically. If
+dependencies in leiningen-core change, you have to redo the `lein bootstrap`
+step mentioned earlier.
 
 Using `bin/lein` alone from the master branch without a full checkout
 is not supported. If you want to just grab a shell script to work

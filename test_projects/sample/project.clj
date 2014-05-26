@@ -13,8 +13,9 @@
   :dependencies [[~(symbol "org.clojure" "clojure") ~clj-version]
                  [rome ~(str "0." "9")]
                  [ring "1.0.0"]]
+  :plugins [[codox "0.6.4"]]
   :main nom.nom.nom
-  :warn-on-reflection true
+  :global-vars {*warn-on-reflection* true}
   :jar-exclusions [#"^META-INF"]
   :filespecs [{:type :fn :fn (fn [p] {:type :bytes :path "bytes.clj"
                                      :bytes (str "[:bytes \"are\" "

@@ -1,7 +1,104 @@
 # Leiningen News -- history of user-visible changes
 
-## 2.1.0 / ???
+## 2.3.4 / 2013-11-18
 
+* Suggest `:exclusions` to possibly confusing `:pedantic?` dependencies. (Nelson Morris, Phil Hagelberg)
+* Optionally look for snapshot templates in `new` task. (Travis Vachon)
+* Allow task chains to be declared without commas in project.clj. (Jean Niklas L'orange)
+* Support extra configurability in `:pom-plugins`. (Dominik Dziedzic)
+* Fix a bug where implicit :aot warning triggered incorrectly. (Jean Niklas L'orange)
+* Fix a bug where `lein repl connect` ignored port argument. (Toby Crawley)
+
+## 2.3.3 / 2013-10-05
+
+* Add support for `:uberjar-merge-with`. (Marshall Bockrath-Vandegrift)
+* Better error message for `-m` arg in `run` task. (Aleksandar Simic)
+* Support stdin when using `:eval-in :nrepl`. (Phil Hagelberg)
+* Add directory entries to jar files. (Vadim Platonov)
+* Fix a bug where `-main` was hard-coded to initial directory. (Phil Hagelberg)
+
+## 2.3.2 / 2013-08-19
+
+* Write `.nrepl-port` file for better tool interoperability. (Phil Hagelberg)
+* Support targeted upgrades in `lein.bat`. (Shantanu Kumar)
+* Warn when projects rely on implicit AOT of `:main`. (Phil Hagelberg)
+* Fix a bug where implicit AOT of `:main` was disabled. (Phil Hagelberg)
+* Disable profile isolation by default. Will be back in 3.x. (Phil Hagelberg)
+
+## 2.3.1 / 2013-08-13
+
+* Fix self-install bug. (Sam Aaron, Steven Harms)
+* Fix bug with AOT classes not being included in jars. (Phil Hagelberg)
+* Support disabling test task's monkeypatch of `clojure.test`. (Phil Hagelberg)
+* Allow project map to be readable. (Phil Hagelberg)
+
+## 2.3.0 / 2013-08-08
+
+* Add `:eval-in :pprint` for debugging. (Phil Hagelberg)
+* Support cleaning extra dirs with `:clean-targets`. (Yoshinori Kohyama)
+* Test-selectors skip fixtures too, not just running tests. (Gary Fredericks)
+* Place licenses and readmes into jars. (Phil Hagelberg)
+* Include LICENSE as separate file in templates. (Wolodja Wentland)
+* Allow aborting on ambiguous version resolution with `:pedantic`. (Nelson Morris, Phil Hagelberg)
+* Scope `:compile-path` and `:native-path` under profile-specific target dir. (Phil Hagelberg)
+* Fix bug where uberjar filename would include provided profile. (Phil Hagelberg)
+* Deprecate explicit `self-install` command. (Phil Hagelberg)
+* Fix bugs around long lines in jar manifests. (Leon Barrett)
+* Support nested checkout dependencies. (Phil Hagelberg)
+* Fix bugs around `:filespecs`. (Jean Niklas L'orange)
+
+## 2.2.0 / 2013-05-28
+
+* Support setting custom welcome message when repl connects. (Colin Jones)
+* Fix a bug where old template versions were always fetched. (Nelson Morris)
+* Support `:java-agents` for tooling and instrumenting. (Phil Hagelberg)
+* Allow checkout dependencies to operate recursively. (Phil Hagelberg)
+* Introduce `:uberjar` profile. (Phil Hagelberg)
+* Isolate target paths by profiles. (Phil Hagelberg)
+* Support deploying ad-hoc files. (Phil Hagelberg)
+* Set `*command-line-args*` in run task. (Anthony Grimes)
+* Allow templates to specify executable files. (Joe Littlejohn)
+* Remove clojuredocs repl support to reduce dependency conflicts. (Phil Hagelberg)
+
+## 2.1.3 / 2013-04-12
+
+* Fix fast trampoline to work without user profiles. (Malcolm Sparks)
+* Fix a bug where duplicate files in jars would blow up. (Phil Hagelberg)
+* Fix a bug where cyclical dependencies could cause a crash. (Nelson Morris)
+* Allow aliases to have docstrings. (Jean Niklas L'orange)
+* Read credentials from GPG for mirrors. (bdollard)
+* Fix bugs in `update-in` around profiles and more. (Marko Topolnik)
+
+## 2.1.2 / 2013-02-28
+
+* Add new way to specify no-proxy hosts. (Joe Littlejohn)
+* Allow TieredCompilation to be disabled for old JVMs. (Phil Hagelberg)
+* Fix a bug merging keywords in profiles. (Jean Niklas L'orange)
+* Fix a bug where tests wouldn't run under with-profiles. (Phil Hagelberg)
+* Support for calling set! on arbitrary vars on startup. (Gary Verhaegen)
+* Allow update-in to work on top-level keys. (Marko Topolnik)
+* Fix a bug breaking certain templates. (Colin Jones)
+* Fix a bug where trampolined repl would hang. (Marko Topolnik)
+
+## 2.1.1 / 2013-03-21
+
+* Add `:test-paths` to directories shared by checkout deps. (Phil Hagelberg)
+* Allow `run` task to function outside projects. (Phil Hagelberg)
+* Fix a bug preventing `with-profiles` working outside projects. (Colin Jones)
+* Fix a bug in trampolined `repl`. (Colin Jones)
+* Fix a bug in `update-in` task causing stack overflow. (David Powell)
+* Fix a bug in `lein upgrade`. (Phil Hagelberg)
+
+## 2.1.0 / 2013-03-19
+
+* Compile task accepts regexes as command-line args. (Joshua P. Tilles)
+* Allow key to be specified to use when signing artifacts. (Tim McCormack)
+* Added GPG introductory guide. (Toby Crawley)
+* Many bug fixes in batch file launcher. (David Powell)
+* Self install via lein.bat no longer requires curl/wget. (slahn)
+* Allow stdin of project processes to be closed. (Jean Niklas L'orange)
+* Better behaviour when GPG or keys are missing. (Toby Crawley)
+* Support customizing key-managers for SSL. (Stephen Nelson)
 * Add update-in task for arbitrary project map changes. (Phil Hagelberg)
 * Warn when version ranges are detected. (Nelson Morris)
 * Add support for msys on Windows machines. (megri)
@@ -18,6 +115,7 @@
 * Don't follow symlinks in clean task. (Jean Niklas L'orange)
 * Add support for ~/.lein/profiles.d. (Jean Niklas L'orange)
 * Allow ctrl-c to interrupt repl input (Colin Jones)
+* Allow `lein test` to take files as arguments (Gabriel Horner)
 
 ## 2.0.0 / 2013-01-19
 

@@ -20,9 +20,9 @@ choice; you can deploy to S3 buckets using
 Alternatively you can run a private repository on your own server.
 Both [Archiva](http://archiva.apache.org/) and
 [Nexus](http://nexus.sonatype.org/) provide this as well as proxying
-to other repositories, so you can set `:omit-default-repositories` in
-project.clj, and dependency downloads will speed up by quite a bit
-with only one server to check.
+to other repositories, so you can set `^:replace` metadata on
+`:repositories` in project.clj, and dependency downloads will speed up
+by quite a bit since Clojars and Maven Central won't be checked.
 
 The private server will need to be added to the `:repositories`
 listing in project.clj. Archiva and Nexus offer separate repositories
@@ -44,6 +44,31 @@ projects may also be specified in the `:user` profile in `~/.lein/profiles.clj`:
 {:user {:deploy-repositories [["internal" "http://blueant.com/archiva/internal"]]}}
 ```
 
+### Non-standard Repository Protocols
+
+If you are deploying to a repository that doesn't use one of the
+standard protocols (`file:`, `http:`, `https:`), you may need to
+provide a wagon factory for that protocol. You can do so by specifying
+the wagon provider as a plugin dependency:
+
+```clj
+:plugins [[org.apache.maven.wagon/wagon-webdav-jackrabbit "2.4"]]
+```
+
+then registering a wagon factory function at the bottom of your project.clj:
+
+```clj
+(cemerick.pomegranate.aether/register-wagon-factory! "dav"
+  #(eval '(org.apache.maven.wagon.providers.webdav.WebDavWagon.)))
+```
+
+Note that the two most common custom protocols (`s3:`/`s3p:` and
+`dav:`) are already supported by plugins
+([S3 wagon private](https://github.com/technomancy/s3-wagon-private)
+and [lein-webdav](https://github.com/tobias/lein-webdav),
+respectively), so you can just depend on those plugins instead of
+adding the above code to your project.clj.
+
 ## Authentication
 
 Deploying and reading from private repositories needs authentication
@@ -52,7 +77,9 @@ you'll usually need to provide a `:username` and `:password` or
 `:passphrase`. Leiningen will prompt you for a password if you haven't
 set up credentials, but it's convenient to set it so you don't have to
 re-enter it every time you want to deploy. You will need
-[gpg](http://www.gnupg.org/) installed and a key pair configured.
+[gpg](http://www.gnupg.org/) installed and a key pair configured.  If
+you need help with either of those, see the
+[GPG guide](https://github.com/technomancy/leiningen/blob/stable/doc/GPG.md).
 
 ### GPG
 
@@ -74,12 +101,6 @@ First write your credentials map to `~/.lein/credentials.clj` like so:
  "s3p://s3-repo-bucket/releases"
  {:username "AKIAIN..." :passphrase "1TChrGK4s..."}}
 ```
-
-If you don't have a key pair yet, it's easy to generate one. The
-defaults should serve you well, but be sure to pick a strong passphrase.
-
-    $ gpg --gen-key
-
 Then encrypt it with `gpg`:
 
     $ gpg --default-recipient-self -e \
@@ -89,16 +110,7 @@ Remember to delete the plaintext `credentials.clj` once you've
 encrypted it. Due to a bug in `gpg` you currently need to use
 `gpg-agent` and have already unlocked your key before Leiningen
 launches, but with `gpg-agent` you only have to enter your passphrase
-once per login.
-
-On some systems you will be prompted for your GPG passphrase if you
-haven't entered it. If yours does not, you can install
-[Keychain](https://github.com/funtoo/keychain), which provides this
-functionality portably. Your key will also be used for signing
-artifacts if the version is not a snapshot, so you may be asked for
-the passphrase multiple times if the agent is not configured. To
-disable signing of releases, set `:sign-releases` to false in the
-`:repositories` entry you are targeting.
+periodically; it will keep it cached for a given period.
 
 ### Full-disk Encryption
 

@@ -6,14 +6,25 @@
             [leiningen.core.utils :as utils])
   (:import (java.util.regex Pattern)))
 
+(defn getprop
+  "Wrap System/getProperty for testing purposes."
+  [prop-name]
+  (System/getProperty prop-name))
+
+(defn getenv
+  "Wrap System/getenv for testing purposes."
+  [name]
+  (System/getenv name))
+
 (defn leiningen-home
   "Return full path to the user's Leiningen home directory."
   []
-  (let [lein-home (System/getenv "LEIN_HOME")
+  (let [lein-home (getenv "LEIN_HOME")
         lein-home (or (and lein-home (io/file lein-home))
                       (io/file (System/getProperty "user.home") ".lein"))]
     (.getAbsolutePath (doto lein-home .mkdirs))))
 
+;; TODO: move all these memoized fns into delays
 (def init
   "Load the user's ~/.lein/init.clj file, if present."
   (memoize (fn []
@@ -23,52 +34,60 @@
                       (catch Exception e
                         (.printStackTrace e))))))))
 
+(defn- load-profiles-d-file
+  "Returns a map entry containing the filename (without `.clj`) associated
+  with its contents. The content will be tagged with its origin."
+  [file]
+  (try
+    (let [kw (->> file .getName (re-find #".+(?=\.clj)") keyword)
+          contents (with-meta (utils/read-file file) ;; assumes the file exist
+                     {:origin (.getAbsolutePath file)})]
+      [kw contents])
+    (catch Exception e
+      (binding [*out* *err*]
+        (println "Error reading" (.getName file)
+                 "from" (-> file .getParentFile .getAbsolutePath (str ":")))
+        (println (.getMessage e))))))
+
 (def profiles-d-profiles
   "Load all Clojure files from the profiles.d folder in your Leiningen home if
-  present. Returns a realized seq with the different profiles."
+  present. Returns a seq with map entries of the different profiles."
   (memoize
    (fn []
      (let [profile-dir (io/file (leiningen-home) "profiles.d")]
-       (when (and (.exists profile-dir) (.isDirectory profile-dir))
-         (doall
-          (for [file (.listFiles profile-dir)
-                :when (.. file getName (endsWith ".clj"))]
-            (try (utils/read-file file)
-                 (catch Exception e
-                   (binding [*out* *err*]
-                     (println "Error reading" (.getName file)
-                              "from" (str (leiningen-home) "/profiles.d:"))
-                     (println (.getMessage e))))))))))))
+       (if (.isDirectory profile-dir)
+         (for [file (.listFiles profile-dir)
+               :when (-> file .getName (.endsWith ".clj"))]
+           (load-profiles-d-file file)))))))
 
 (def ^:internal load-profiles
-  "Load profiles.clj from dir if present."
+  "Load profiles.clj from dir if present. Tags all profiles with its origin."
   (memoize
    (fn [dir]
-     (try (utils/read-file (io/file dir "profiles.clj"))
-          (catch Exception e
-            (binding [*out* *err*]
-              (println "Error reading profiles.clj from" dir)
-              (println (.getMessage e))))))))
+       (if-let [contents (utils/read-file (io/file dir "profiles.clj"))]
+         (utils/map-vals contents with-meta
+                         {:origin (str (io/file dir "profiles.clj"))})))))
+
 
 (def profiles
   "Load profiles.clj from your Leiningen home and profiles.d if present."
   (memoize
    (fn []
-     (let [error-fn ;; TODO: More descriptive error messages.
+     (let [error-fn
            (fn [a b]
              (binding [*out* *err*]
-               (println "Error: A profile is defined multiple times!")
-               (println "Please check your profiles.clj and your profiles"
-                        "in the profiles.d directory."))
-             (throw (Exception. "Multiple profiles defined in ~/.lein")))]
-       (try (apply merge-with error-fn
-                   (load-profiles (leiningen-home)) (profiles-d-profiles))
-            (catch Exception e))))))
+               (println "Error: A profile is defined in both"
+                        (-> a meta :origin) "and in" (-> b meta :origin)))
+             (throw (ex-info "Multiple profiles defined in ~/.lein"
+                             {:exit-code 1})))]
+       (merge-with error-fn
+                   (load-profiles (leiningen-home))
+                   (into {} (profiles-d-profiles)))))))
 
 (defn gpg-program
   "Lookup the gpg program to use, defaulting to 'gpg'"
   []
-  (or (System/getenv "LEIN_GPG") "gpg"))
+  (or (getenv "LEIN_GPG") "gpg"))
 
 (defn gpg
   "Shells out to (gpg-program) with the given arguments"
@@ -81,7 +100,7 @@
 (defn gpg-available?
   "Verifies (gpg-program) exists"
   []
-  (= 0 (:exit (gpg "--version"))))
+  (zero? (:exit (gpg "--version"))))
 
 (defn credentials-fn
   "Decrypt map from credentials.clj.gpg in Leiningen home if present."
@@ -89,13 +108,13 @@
         (if (.exists cred-file)
           (credentials-fn cred-file))))
   ([file]
-     (let [{:keys [out err exit]} (gpg 
-                                   "--quiet" "--batch"
-                                   "--decrypt" "--" (str file))]
+     (let [{:keys [out err exit]} (gpg "--quiet" "--batch"
+                                       "--decrypt" "--" (str file))]
        (if (pos? exit)
          (binding [*out* *err*]
            (println "Could not decrypt credentials from" (str file))
-           (println err))
+           (println err)
+           (println "See `lein help gpg` for how to install gpg."))
          (read-string out)))))
 
 (def credentials (memoize credentials-fn))
@@ -108,29 +127,33 @@
                 cred))))
 
 (defn- resolve-credential
+  "Resolve key-value pair from result into a credential, updating result."
   [source-settings result [k v]]
   (letfn [(resolve [v]
             (cond (= :env v)
-                  (System/getenv (str "LEIN_" (str/upper-case (name k))))
+                  (getenv (str "LEIN_" (str/upper-case (name k))))
 
                   (and (keyword? v) (= "env" (namespace v)))
-                  (System/getenv (str/upper-case (name v)))
+                  (getenv (str/upper-case (name v)))
 
                   (= :gpg v)
                   (get (match-credentials source-settings (credentials)) k)
 
-                  (coll? v)
+                  (coll? v) ;; collection of places to look
                   (->> (map resolve v)
                        (remove nil?)
                        first)
+
                   :else v))]
-    (assoc result k (resolve v))))
+    (if (#{:username :password :passphrase :private-key-file} k)
+      (assoc result k (resolve v))
+      (assoc result k v))))
 
 (defn resolve-credentials
   "Applies credentials from the environment or ~/.lein/credentials.clj.gpg
-   as they are specified and available."
+  as they are specified and available."
   [settings]
-  (let [gpg-creds (when (= :gpg (:creds settings))
+  (let [gpg-creds (if (= :gpg (:creds settings))
                     (match-credentials settings (credentials)))
         resolved (reduce (partial resolve-credential settings)
                          (empty settings)

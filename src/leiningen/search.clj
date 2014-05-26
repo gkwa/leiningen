@@ -1,11 +1,14 @@
 (ns leiningen.search
+  "Search remote maven repositories for matching jars."
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [leiningen.core.user :as user]
             [leiningen.core.main :as main]
             [leiningen.core.project :as project]
             [clj-http.client :as http])
-  (:import (org.apache.maven.index IteratorSearchRequest MAVEN NexusIndexer)
+  (:import (org.apache.lucene.search BooleanClause$Occur)
+           (org.apache.lucene.search BooleanQuery)
+           (org.apache.maven.index IteratorSearchRequest MAVEN NexusIndexer)
            (org.apache.maven.index.context IndexingContext)
            (org.apache.maven.index.creator JarFileContentsIndexCreator
                                            MavenPluginArtifactInfoIndexCreator
@@ -33,7 +36,57 @@
 (defn- remove-context [context]
   (.removeIndexingContext indexer context false))
 
-;; TODO: add progress reporting back in
+(gen-class
+ :name leiningen.search.extstream
+ :extends java.io.InputStream
+ :state state
+ :init init
+ :constructors {[java.io.InputStream Long] []}
+ :methods [[saveTotalBytes [Long] void]
+           [printProgress [] void]]
+ :prefix "ext-"
+ :main false)
+
+(defn ext-init [stream content-length]
+  [ [] (atom (into {} {:stream stream
+                      :content-length content-length
+                      :total-bytes 0})) ])
+
+
+(defn- ext-saveTotalBytes [this total-bytes ]
+  (let [state-map (.state this)]
+    (reset! state-map (assoc @state-map
+                        :total-bytes total-bytes))))
+
+
+(defn- ext-printProgress [this]
+  (let [state @(.state this)
+        total-bytes (:total-bytes state)
+        content-length (:content-length state)
+        progress (/ (* total-bytes 100.0) content-length)
+        ending (if-not (== progress 100) "\r" "\n")]
+    (printf "%.1f%% complete%s" progress ending)
+    (flush)))
+
+
+(defn ext-read-byte<> [this bytebuf]
+  (let [state @(.state this)
+        stream (:stream state)
+        count (.read stream bytebuf)]
+    (ext-saveTotalBytes this (+ (:total-bytes state) count))
+    (ext-printProgress this)
+    count))
+
+
+(defn ext-read-byte<>-int-int [this bytebuf off len]
+  (let [state @(.state this)
+        stream (:stream state)
+        count (.read stream bytebuf off len)]
+    (ext-saveTotalBytes this (+ (:total-bytes state) count))
+    (ext-printProgress this)
+    count))
+
+
 (defn- http-resource-fetcher []
   (let [base-url (promise)
         stream (promise)]
@@ -44,9 +97,12 @@
       (disconnect []
         (.close @stream))
       (^java.io.InputStream retrieve [name]
-        (main/debug "Downloading" (str @base-url "/" name))
-        (let [s (:body (http/get (str @base-url "/" name)
-                                 {:throw-exceptions false :as :stream}))]
+        (println "Downloading" (str @base-url "/" name))
+        (let [r (http/get (str @base-url "/" name)
+                                 {:throw-exceptions false :as :stream})
+              s (leiningen.search.extstream.
+                 (:body r)
+                 (Long/parseLong (get (:headers r) "content-length")))]
           (deliver stream s)
           s)))))
 
@@ -84,7 +140,7 @@
     (println)))
 
 (def ^{:private true}
-  field-splitter-re #"^([a-z]+)(?:\:)(.+)")
+  multi-entry-splitter-re #"([a-z]+)(?:\:)('[^']+'|[^ ]+)")
 
 (defn- lookup-lucene-field-for
   [^String s]
@@ -101,25 +157,37 @@
     "d"           MAVEN/DESCRIPTION
     "desc"        MAVEN/DESCRIPTION
     "description" MAVEN/DESCRIPTION
-    (throw (IllegalArgumentException. (format "search over the field %s is not supported; known fields: id, description (aliased as d), group (aliased as g)" s)))))
+    "v"           MAVEN/VERSION
+    "version"     MAVEN/VERSION
+    (throw (IllegalArgumentException. (format "search over the field %s is not supported; known fields: id, description (aliased as d), group (aliased as g), version (aliased as v)" s)))))
 
-(defn- split-query
-  "Splits \"field:query\" into \"field\" and \"query\""
-  [^String s]
-  (let [[_ field query] (re-find field-splitter-re s)]
+(defn- query-parts [^String s]
+  (for [[full-text field query] (or (re-seq multi-entry-splitter-re s)
+                                    [[s ""]])]
     [(lookup-lucene-field-for field)
-     (or query s)]))
+     (or query full-text)]))
+
+(defn- construct-query [[field q]]
+  (let [search-expression (UserInputSearchExpression. q)]
+    (try (.constructQuery indexer field search-expression)
+         (catch Exception e
+           (binding [*out* *err*]
+             (println (.getMessage e)))))))
 
 (defn search-repository [query contexts page]
-  (let [[field q]         (split-query query)
-        search-expression (UserInputSearchExpression. q)
-        constructed-query (.constructQuery indexer field
-                                           search-expression)
+  (let [query-parts (query-parts query)
+        queries (map construct-query query-parts)
+        constructed-query (BooleanQuery.)
+        _ (doseq [q queries :when q]
+            (.add constructed-query q BooleanClause$Occur/MUST))
         request (doto (IteratorSearchRequest. constructed-query contexts)
                   (.setStart (* (dec page) page-size))
                   (.setCount page-size))]
     (with-open [response (.searchIterator indexer request)]
-      (println (format "Searching over %s..." (.getDescription field)))
+      (let [search-fields (map (comp #(.getDescription %) first)
+                               query-parts)]
+        (println (format "Searching over %s..."
+                         (string/join ", " search-fields))))
       (print-results response page))))
 
 (defn ^:no-project-needed search
@@ -133,6 +201,7 @@ matches or do more advanced queries such as this:
   $ lein search clojure
   $ lein search description:crawl
   $ lein search group:clojurewerkz
+  $ lein search \"id:clojure version:1.6\"
   $ lein search \"Riak client\"
 
 Also accepts a second parameter for fetching successive pages."
@@ -150,9 +219,16 @@ Also accepts a second parameter for fetching successive pages."
            (when (refresh? (.getRepositoryUrl context) project)
              (do
                (println "Updating the search index. This may take a few minutes...")
-               (update-index context))))
+               (try (update-index context)
+                    (catch Exception e
+                      (binding [*out* *err*]
+                        (main/info "Warning: could not read index for"
+                                   (.getRepositoryId context)
+                                   "\n" (.getMessage e))))))))
          ;; TODO: improve error message when page isn't numeric
          (search-repository query contexts (Integer. page))
          (finally
-           (doall (map remove-context contexts))
+           (doseq [c contexts] (remove-context c))
            (System/setProperty "java.io.tmpdir" orig-tmp))))))
+
+

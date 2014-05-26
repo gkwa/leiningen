@@ -1,8 +1,9 @@
 (ns leiningen.new.app
   "Generate a basic application project."
-  (:use [leiningen.new.templates :only [renderer year project-name
-                                        ->files sanitize-ns name-to-path
-                                        multi-segment]]))
+  (:require [leiningen.new.templates :refer [renderer year project-name
+                                             ->files sanitize-ns name-to-path
+                                             multi-segment]]
+            [leiningen.core.main :as main]))
 
 (defn app
   "An application project template."
@@ -14,11 +15,13 @@
               :namespace main-ns
               :nested-dirs (name-to-path main-ns)
               :year (year)}]
-    (println "Generating a project called" name "based on the 'app' template.")
+    (main/info "Generating a project called" name "based on the 'app' template.")
     (->files data
              ["project.clj" (render "project.clj" data)]
              ["README.md" (render "README.md" data)]
              ["doc/intro.md" (render "intro.md" data)]
              [".gitignore" (render "gitignore" data)]
              ["src/{{nested-dirs}}.clj" (render "core.clj" data)]
-             ["test/{{nested-dirs}}_test.clj" (render "test.clj" data)])))
+             ["test/{{nested-dirs}}_test.clj" (render "test.clj" data)]
+             ["LICENSE" (render "LICENSE" data)]
+             "resources")))

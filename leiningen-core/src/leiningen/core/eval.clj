@@ -4,43 +4,31 @@
             [clojure.java.io :as io]
             [clojure.string :as string]
             [cemerick.pomegranate :as pomegranate]
-            [leiningen.core.user :as user]
+            [cemerick.pomegranate.aether :as aether]
             [leiningen.core.project :as project]
             [leiningen.core.main :as main]
-            [leiningen.core.classpath :as classpath]))
-
-;; # OS detection
-
-(defn- get-by-pattern
-  "Gets a value from map m, but uses the keys as regex patterns, trying
-  to match against k instead of doing an exact match."
-  [m k]
-  (m (first (drop-while #(nil? (re-find (re-pattern %) k))
-                        (keys m)))))
-
-(def ^:private native-names
-  {"Mac OS X" :macosx "Windows" :windows "Linux" :linux
-   "FreeBSD" :freebsd "OpenBSD" :openbsd
-   "amd64" :x86_64 "x86_64" :x86_64 "x86" :x86 "i386" :x86
-   "arm" :arm "SunOS" :solaris "sparc" :sparc "Darwin" :macosx})
+            [leiningen.core.classpath :as classpath]
+            [leiningen.core.utils :as utils])
+  (:import (com.hypirion.io Pipe ClosingPipe)
+           (java.io File)))
 
 (def ^:private arch-options
   {:x86 ["-d32"] :x86_64 ["-d64"]})
 
-(defn get-os
-  "Returns a keyword naming the host OS."
-  []
-  (get-by-pattern native-names (System/getProperty "os.name")))
+(def ^:deprecated get-os
+  "Returns a keyword naming the host OS. Deprecated, use
+  leiningen.core.utils/get-os instead."
+  utils/get-os)
 
-(defn get-arch
-  "Returns a keyword naming the host architecture"
-  []
-  (get-by-pattern native-names (System/getProperty "os.arch")))
+(def ^:deprecated get-arch
+  "Returns a keyword naming the host architecture. Deprecated, use
+  leiningen.core.utils/get-arch instead."
+  utils/get-arch)
 
-(defn platform-nullsink []
-  (io/file (if (= :windows (get-os))
-             "NUL"
-             "/dev/null")))
+(def ^:deprecated platform-nullsink
+  "Returns a file destination that will discard output.  Deprecated, use
+  leiningen.core.utils/platform-nullsink instead."
+  utils/platform-nullsink)
 
 ;; # Preparing for eval-in-project
 
@@ -63,22 +51,28 @@
   javac, compile, and any other tasks the project specifies."
   [project]
   ;; This must exist before the project is launched.
-  (.mkdirs (io/file (:compile-path project "/tmp")))
+  (when (:root project)
+    (.mkdirs (io/file (:compile-path project "/tmp"))))
   (classpath/resolve-dependencies :dependencies project)
   (run-prep-tasks project)
-  (.mkdirs (io/file (:compile-path project "/tmp")))
   (deliver @prep-blocker true)
   (reset! prep-blocker (promise)))
 
 ;; # Subprocess stuff
 
-(defn native-arch-path
-  "Path to the os/arch-specific directory containing native libs."
+(defn native-arch-paths
+  "Paths to the os/arch-specific directory containing native libs."
   [project]
-  (let [os (:os project (get-os))
-        arch (:arch project (get-arch))]
+  (let [os (:os project (utils/get-os))
+        arch (:arch project (utils/get-arch))
+        native-path (:native-path project)]
     (if (and os arch)
-      (io/file (:native-path project) (name os) (name arch)))))
+      (conj
+       (->> (:dependencies project)
+            (map classpath/get-native-prefix)
+            (remove nil?)
+            (map #(io/file native-path %)))
+       (io/file native-path (name os) (name arch))))))
 
 (defn- as-str [x]
   (if (instance? clojure.lang.Named x)
@@ -104,7 +98,7 @@
 (defn- get-jvm-args
   "Calculate command-line arguments for launching java subprocess."
   [project]
-  (let [native-arch-path (native-arch-path project)]
+  (let [native-arch-paths (native-arch-paths project)]
     `(~@(get-jvm-opts-from-env (System/getenv "JVM_OPTS"))
       ~@(:jvm-opts project)
       ~@(get arch-options (:arch project))
@@ -114,8 +108,12 @@
                          :file.encoding (or (System/getProperty "file.encoding") "UTF-8")
                          :clojure.debug (boolean (or (System/getenv "DEBUG")
                                                      (:debug project)))})
-      ~@(if (and native-arch-path (.exists native-arch-path))
-          [(d-property [:java.library.path native-arch-path])])
+      ~@(if native-arch-paths
+          (let [extant-paths (filter #(.exists %) native-arch-paths)]
+            (if (seq extant-paths)
+              [(d-property [:java.library.path
+                            (string/join java.io.File/pathSeparatorChar
+                                         extant-paths)])])))
       ~@(when-let [{:keys [host port non-proxy-hosts]} (classpath/get-proxy-settings)]
           [(d-property [:http.proxyHost host])
            (d-property [:http.proxyPort port])
@@ -123,29 +121,6 @@
       ~@(when-let [{:keys [host port]} (classpath/get-proxy-settings "https_proxy")]
           [(d-property [:https.proxyHost host])
            (d-property [:https.proxyPort port])]))))
-
-(defn- out-pump [reader out]
-  (let [buffer (make-array Character/TYPE 1000)]
-    (loop [len (.read reader buffer)]
-      (when-not (neg? len)
-        (.write out buffer 0 len)
-        (.flush out)
-        (Thread/sleep 100) ;; TODO: Why is this here?
-        (recur (.read reader buffer))))))
-
-(defn- in-pump
-  "Redirects input from this process to the input stream to the other process,
-  one byte at a time. Instead of blocking when reading, busy waits in order to
-  gracefully exit and not read other sub-processes' input."
-  [reader out done?]
-  (loop []
-    (if (.ready reader)
-      (do
-        (.write out (.read reader))
-        (.flush out))
-      (Thread/sleep 10))
-    (when (not @done?)
-      (recur))))
 
 (def ^:dynamic *dir*
   "Directory in which to start subprocesses with eval-in-project or sh."
@@ -175,53 +150,65 @@
        (map #(str (name (key %)) "=" (val %)))
        (into-array String)))
 
-(defn sh
+(defn sh ;; TODO 3.0.0 - move to independent namespace. e.g. io.clj
   "A version of clojure.java.shell/sh that streams in/out/err."
   [& cmd]
+  (when *pump-in*
+    (utils/rebind-io!))
   (let [env (overridden-env *env*)
         proc (.exec (Runtime/getRuntime) (into-array cmd) env (io/file *dir*))]
     (.addShutdownHook (Runtime/getRuntime)
                       (Thread. (fn [] (.destroy proc))))
     (with-open [out (io/reader (.getInputStream proc))
                 err (io/reader (.getErrorStream proc))
-                in (io/writer (.getOutputStream proc))]
-      (let [done (atom false)
-            pump-out (doto (Thread. (bound-fn [] (out-pump out *out*))) .start)
-            pump-err (doto (Thread. (bound-fn [] (out-pump err *err*))) .start)
-            pump-in (Thread. (bound-fn [] (in-pump *in* in done)))]
+                in (.getOutputStream proc)]
+      (let [pump-out (doto (Pipe. out *out*) .start)
+            pump-err (doto (Pipe. err *err*) .start)
+            ;; TODO: this prevents nrepl need-input msgs from being propagated
+            ;; in the case of connecting to Leiningen over nREPL.
+            pump-in (ClosingPipe. System/in in)]
         (when *pump-in* (.start pump-in))
         (.join pump-out)
         (.join pump-err)
         (let [exit-value (.waitFor proc)]
           (when *pump-in*
-            (reset! done true)
-            (.join pump-in))
+            (.kill System/in)
+            (.join pump-in)
+            (.resurrect System/in))
           exit-value)))))
 
-;; work around java's command line handling on windows
-;; http://bit.ly/9c6biv This isn't perfect, but works for what's
-;; currently being passed; see http://www.perlmonks.org/?node_id=300286
-;; for some of the landmines involved in doing it properly
-(defn- form-string [form eval-in]
-  (if (and (= (get-os) :windows) (not= :trampoline eval-in))
-    (let [s (pr-str (pr-str form))] (subs s 1 (dec (.length s))))
-    (pr-str form)))
+(defn- agent-arg [coords file]
+  (let [{:keys [options bootclasspath]} (apply hash-map coords)]
+    (concat [(str "-javaagent:" file (and options (str "=" options)))]
+            (if bootclasspath [(str "-Xbootclasspath/a:" file)]))))
 
-(defn- classpath-arg [project]
-  (if (:bootclasspath project)
-    [(apply str "-Xbootclasspath/a:"
-            (interpose java.io.File/pathSeparatorChar
-                       (classpath/get-classpath project)))]
-    ["-classpath" (string/join java.io.File/pathSeparatorChar
-                               (classpath/get-classpath project))]))
+(defn ^:internal classpath-arg [project]
+  (let [classpath-string (string/join java.io.File/pathSeparatorChar
+                                      (classpath/get-classpath project))
+        agent-tree (classpath/get-dependencies :java-agents project)
+        ;; Seems like you'd expect dependency-files to walk the whole tree
+        ;; here, but it doesn't, which is what we want. but maybe a bug?
+        agent-jars (aether/dependency-files (aether/dependency-hierarchy
+                                             (:java-agents project) agent-tree))]
+    `(~@(mapcat agent-arg (:java-agents project) agent-jars)
+      ~@(if (:bootclasspath project)
+          [(str "-Xbootclasspath/a:" classpath-string)]
+          ["-classpath" classpath-string]))))
 
 (defn shell-command
   "Calculate vector of strings needed to evaluate form in a project subprocess."
   [project form]
-  `(~(or (:java-cmd project) (System/getenv "JAVA_CMD") "java")
-    ~@(classpath-arg project)
-    ~@(get-jvm-args project)
-    "clojure.main" "-e" ~(form-string form (:eval-in project))))
+  (let [init-file (if-let [checksum (System/getenv "INPUT_CHECKSUM")]
+                    (io/file (:target-path project) (str checksum "-init.clj"))
+                    (File/createTempFile "form-init" ".clj"))]
+    (if-not (System/getenv "LEIN_FAST_TRAMPOLINE")
+      (spit init-file (pr-str `(-> (java.io.File. ~(.getCanonicalPath init-file))
+                                   (.deleteOnExit)))))
+    (spit init-file (pr-str form) :append true)
+    `(~(or (:java-cmd project) (System/getenv "JAVA_CMD") "java")
+      ~@(classpath-arg project)
+      ~@(get-jvm-args project)
+      "clojure.main" "-i" ~(.getCanonicalPath init-file))))
 
 ;; # eval-in multimethod
 
@@ -229,7 +216,10 @@
   "Evaluate the given form in various contexts."
   ;; Force it to be a keyword so that we can accept symbols too. That
   ;; way ^:replace and ^:displace metadata can be applied.
-  (fn [project _] (keyword (name (:eval-in project :subprocess)))))
+  (fn [project _] (keyword (name (:eval-in project :default)))))
+
+(defmethod eval-in :default [project form]
+  (eval-in (assoc project :eval-in :subprocess) form))
 
 (defmethod eval-in :subprocess [project form]
   (binding [*dir* (:root project)]
@@ -237,10 +227,12 @@
       (when (pos? exit-code)
         (throw (ex-info "Subprocess failed" {:exit-code exit-code}))))))
 
+(defonce trampoline-project (atom nil))
 (defonce trampoline-forms (atom []))
 (defonce trampoline-profiles (atom []))
 
 (defmethod eval-in :trampoline [project form]
+  (reset! trampoline-project project)
   (swap! trampoline-forms conj form)
   (swap! trampoline-profiles conj (select-keys project
                                                [:dependencies :source-paths
@@ -265,6 +257,17 @@
            (.printStackTrace e)
            (throw (ex-info "Classloader eval failed" {:exit-code 1}))))))
 
+(defn- send-input [message client session pending]
+  (let [id (str (java.util.UUID/randomUUID))]
+    (swap! pending conj id)
+    (message client {:id id :op "stdin" :stdin (str (read-line) "\n")
+                     :session session})))
+
+(defn- done? [{:keys [id status] :as msg} pending]
+  (let [pending? (@pending id)]
+    (swap! pending disj id)
+    (and (not pending?) (some #{"done" "interrupted" "error"} status))))
+
 (defmethod eval-in :nrepl [project form]
   (require 'clojure.tools.nrepl)
   (let [port-file (io/file (:target-path project) "repl-port")
@@ -276,12 +279,16 @@
     (if (.exists port-file)
       (let [transport (connect :host "localhost"
                                :port (Integer. (slurp port-file)))
-            client (client-session (client transport Long/MAX_VALUE))]
+            client (client-session (client transport Long/MAX_VALUE))
+            pending (atom #{})]
         (message client {:op "eval" :code (pr-str form)})
-        (doseq [{:keys [out err status]} (repeatedly #(recv transport 100))
-                :while (not (some #{"done" "interrupted" "error"} status))]
-          (when out (println out))
-          (when err (binding [*out* *err*] (println err)))))
+        (doseq [{:keys [out err status session] :as msg} (repeatedly
+                                                          #(recv transport 100))
+                :while (not (done? msg pending))]
+          (when out (print out) (flush))
+          (when err (binding [*out* *err*] (print err) (flush)))
+          (when (some #{"need-input"} status)
+            (send-input message client session pending))))
       ;; TODO: warn that repl couldn't be used?
       (eval-in (assoc project :eval-in :subprocess) form))))
 
@@ -298,16 +305,32 @@
     (System/setProperty k v))
   (eval form))
 
+(defmethod eval-in :pprint [project form]
+  (require 'clojure.pprint)
+  (println "Java:" (or (:java-cmd project) (System/getenv "JAVA_CMD") "java"))
+  (apply println "Classpath:" (classpath-arg project))
+  (apply println "JVM args:" (get-jvm-args project))
+  ;; Can't use binding with dynamic require
+  (let [dispatch-var (resolve 'clojure.pprint/*print-pprint-dispatch*)
+        code-dispatch @(resolve 'clojure.pprint/code-dispatch)]
+    (try (push-thread-bindings {dispatch-var code-dispatch})
+         ((resolve 'clojure.pprint/pprint) form)
+         (finally (pop-thread-bindings)))))
+
 (defn eval-in-project
   "Executes form in isolation with the classpath and compile path set correctly
   for the project. If the form depends on any requires, put them in the init arg
   to avoid the Gilardi Scenario: http://technomancy.us/143"
   ([project form init]
      (prep project)
+     (when (:warn-on-reflection project)
+       (println "WARNING: :warn-on-reflection is deprecated in project.clj;"
+                "use :global-vars."))
      (eval-in project
-              `(do ~init
-                   ~@(:injections project)
-                   (set! ~'*warn-on-reflection*
+              `(do (set! ~'*warn-on-reflection*
                          ~(:warn-on-reflection project))
+                   ~@(map (fn [[k v]] `(set! ~k ~v)) (:global-vars project))
+                   ~init
+                   ~@(:injections project)
                    ~form)))
   ([project form] (eval-in-project project form nil)))

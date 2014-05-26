@@ -15,7 +15,7 @@ instead of directly in the `project.clj` file.
 ## Writing a Plugin
 
 Start by generating a new project with `lein new plugin
-lein-myplugin`, and edit the `myplugin` defn in the
+myplugin`, and edit the `myplugin` defn in the
 `leiningen.myplugin` namespace. You'll notice the `project.clj` file
 has `:eval-in-leiningen true`, which causes all tasks to operate
 inside the leiningen process rather than starting a subprocess to
@@ -42,14 +42,14 @@ project. It will be a map which is based on the `project.clj` file,
 but it also has `:name`, `:group`, `:version`, and `:root` keys added
 in, among other things. Try using the `lein-pprint` plugin to see what
 project maps look like; you can invoke the `pprint` task to examine
-any project.
+any project or combination of profiles.
 
 If you want your task to take parameters from the command-line
 invocation, you can make the function take more than one argument. In
 order to underscore the fact that tasks are just Clojure functions,
 arguments which act as flags are usually accepted as `:keywords`
 rather than traditional `--dashed` syntax. Note that all arguments are
-passed in as strings; it's up to your function to call `read-string`
+still passed in as strings; it's up to your function to call `read-string`
 on the arguments if you want keywords, symbols, integers, etc. Keep
 this in mind when calling other tasks as functions too.
 
@@ -58,10 +58,11 @@ task can be run outside a project directory, add `^:no-project-needed`
 metadata to your task defn to indicate so. Your task should still
 accept a project as its first argument, but it will be allowed to be
 nil if it's run outside a project directory. If you are inside a
-project, Leiningen should change to the root of that project before
+project, Leiningen should `cd` to the root of that project before
 launching the JVM, but some other tools using the `leiningen-core`
-library may not behave the same way, so for greatest portability check
-the `:root` key of the project map and work from there.
+library (IDE integration, etc) may not behave the same way, so for
+greatest portability check the `:root` key of the project map and work
+from there.
 
 ### Documentation
 
@@ -85,6 +86,11 @@ This list of subtasks will show the first line of the docstring for each
 subtask. The full help for a subtask can be viewed via 
 `lein help $TASK_CONTAINING_SUBTASKS $SUBTASK`. 
 
+Leiningen will intercept calls to `lein $MYTASK help` by default and
+turn it into `lein help $MYTASK`. If your task provides its own help
+subtask you can add `^:pass-through-help` metadata to your task defn
+to opt-out of this behaviour.
+
 ## Code Evaluation
 
 Plugin functions run inside Leiningen's process, so they have access
@@ -107,23 +113,38 @@ used to require a namespace earlier in order to avoid the
 
 Inside the `eval-in-project` call the project's own classpath will be
 active and Leiningen's own internals and plugins will not be
-available. However, it's easy to update the project map
-that's passed to `eval-in-project` to add in the dependencies you
-need. For example, this is done in the `lein-swank` plugin like so:
+available.
+
+You can modify the project map before you pass it into `eval-in-project`.
+However, it's recommended that you make your modifications by merging a
+profile in so users can override your changes if necessary. Use
+`leiningen.core.project/merge-profiles` to make your changes:
 
 ```clj
+(def swank-profile {:dependencies [['swank-clojure "1.4.3"]]})
+
 (defn swank
   "Launch swank server for Emacs to connect. Optionally takes PORT and HOST."
-  ([project port host & opts]
-     (eval-in-project (update-in project [:dependencies]
-                                 conj ['swank-clojure "1.4.0"])
-                      (swank-form project port host opts))))
+  [project port host & opts]
+    (let [profile (or (:swank (:profiles project)) swank-profile)
+          project (project/merge-profiles project [profile])]
+      (eval-in-project project 
+                       `(swank.core/-main ~@opts)
+                       '(require 'swank.core))))
 ```
 
-TODO: switch to profiles for this
-
 The code in the `swank-clojure` dependency is needed inside the
-project, so it's `conj`ed into the `:dependencies`.
+project, so it's declared in its own profile map and merged
+in. However, we defer to the `:swank` profile in the project map if
+it's present so that the user can pick their own version of the
+dependency if they like rather than relying on the hard-coded profile
+in the plugin.
+
+Note that the snippet above is not a good example of a plugin since it
+simply wraps `eval-in-project` and `merge-profiles`. If that is all
+you want, you can do it without implementing a plugin; just define an
+alias that uses the `with-profiles` and `run` tasks to call the
+function you need.
 
 Before `eval-in-project` is invoked, Leiningen must "prep" a project,
 usually by ensuring that all Java code and all necessary Clojure code
@@ -138,10 +159,9 @@ quickly if nothing has changed since the last run.
 ## Hooks
 
 You can modify the behaviour of built-in tasks to a degree using
-hooks. Hook functionality is provided by the [Robert
-Hooke](https://github.com/technomancy/robert-hooke) library. This is an
-implied dependency; as long as Leiningen 1.2 or higher is used it will
-be available.
+hooks. Hook functionality is provided by the
+[Robert Hooke](https://github.com/technomancy/robert-hooke) library,
+which is included with Leiningen.
 
 Inspired by clojure.test's fixtures functionality, hooks are functions
 which wrap other functions (often tasks) and may alter their behaviour
@@ -163,21 +183,25 @@ meant to apply to and a function to perform the wrapping:
 
 ;; Place the body of the activate function at the top-level for
 ;; compatibility with Leiningen 1.x
-(defn hooks []
+(defn activate []
   (robert.hooke/add-hook #'leiningen.test/form-for-testing-namespaces
-                         add-test-var-println))
+                         #'add-test-var-println))
 ```
 
-Hooks compose, so be aware that your hook may be running inside another
-hook. See [the documentation for
-Hooke](https://github.com/technomancy/robert-hooke/blob/master/README.md)
-for more details.
+Hooks compose, so be aware that your hook may be running inside
+another hook. See
+[the documentation for Hooke](https://github.com/technomancy/robert-hooke/blob/master/README.md)
+for more details. Note that calls to `add-hook` should use the var for
+both the first and second argument so that hooks can be loaded
+repeatedly without re-adding the hook. This is because in Clojure
+bare functions cannot be compared for equality, but vars can.
 
-If you want your hooks to be loaded automatically with your plugin,
-activate them in a function called `plugin-name.plugin/hooks`. So in the
-example above the plugin is called `lein-integration`, and the function
-`lein-integration.plugin/hooks` is automatically called to activate hooks
-when the `lein-integration` plugin is loaded.
+If you want your hooks to be loaded automatically when other projects
+include your plugin, activate them in a function called
+`plugin-name.plugin/hooks`. So in the example above the plugin is
+called `lein-integration`, and the function
+`lein-integration.plugin/hooks` is automatically called to activate
+hooks when the `lein-integration` plugin is loaded.
 
 Hooks can also be loaded manually by setting the `:hooks` key in project.clj to
 a seq of vars to call to activate your hooks. For backward compatibility, you
@@ -187,13 +211,13 @@ before manually specified hooks.
 
 ## Project Middleware
 
-Project middleware is just a function that is called on a project map returning
-a new project map. Middleware gives a plugin the power to do almost anything.
-For example, a plugin could use middleware to reimplement Leiningen's profiles
-functionality.
+Project middleware is just a function that is called on a project map
+returning a new project map. Middleware gives a plugin the power to do
+almost anything.  For example, a plugin could use middleware to
+reimplement Leiningen's profiles functionality.
 
-The following middleware injects the contents of project map into your project's
-resources folder so it can be read from the project code:
+The following middleware injects the contents of project map into your
+project's resources folder so it can be read from the project code:
 
 ```clj
 (ns lein-inject.plugin)
@@ -210,11 +234,44 @@ setting the `:middleware` key in project.clj to a seq of vars to call to
 transform your project map. Note that automatic middleware is applied before
 manually specified middleware.
 
-Also note that the currently active middleware depends on which profiles are
-active. This means we need to reapply the middleware functions to the project
-map whenever the active profiles change. We accomplish this by storing the fresh
-project map and starting from that whenever we call `merge-profiles`,
-`unmerge-profiles` or `set-profiles`.
+Also note that the currently active middleware depends on which
+profiles are active. This means we need to reapply the middleware
+functions to the project map whenever the active profiles change. We
+accomplish this by storing the fresh project map and starting from
+that whenever we call `merge-profiles`, `unmerge-profiles` or
+`set-profiles`. It also means your middleware functions shouldn't have
+any non-idempotent side-effects since they could be called repeatedly.
+
+## Maven Wagons
+
+[Pomegranate](https://github.com/cemerick/pomegranate) (the library
+used by Leiningen to resolve dependencies) supports registering
+"wagon" factories. Wagons are used to handle non-standard transport
+protocols for repositories, and are looked up based on the protocol of
+the repository url. If your plugin needs to register a wagon factory,
+it can do so by providing a `leiningen/wagons.clj` file containing a
+map of protocols to functions that return wagon instances for the
+protocol. For example, the following `wagons.clj` will register a
+wagon factory function for `dav:` urls:
+
+```clj
+{"dav" #(org.apache.maven.wagon.providers.webdav.WebDavWagon.)}
+```
+
+See [S3 wagon private](https://github.com/technomancy/s3-wagon-private) or
+[lein-webdav](https://github.com/tobias/lein-webdav) for full examples of
+plugins using this technique.
+
+## VCS Methods
+
+Leiningen ships with a `vcs` task which performs a handful of
+release-related version control tasks via multimethods. Out of the box
+it contains implementations for Git, but plugins can add support for
+more systems by including a `leiningen.vcs.$SYSTEM` namespace. All
+namespaces under the `leiningen.vcs.` prefix will be loaded when the
+`vcs` task is invoked. These namespaces should simply define methods
+for the `defmulti`s in `leiningen.vcs` that invoke the specific
+version control system.
 
 ## Requiring Plugins
 
@@ -232,17 +289,14 @@ middleware.
 
 ## Clojure Version
 
-Leiningen 2.0.0 uses Clojure 1.4.0. If you need to use a different
+Leiningen 2.3.4 uses Clojure 1.5.1. If you need to use a different
 version of Clojure from within a Leiningen plugin, you can use
 `eval-in-project` with a dummy project argument:
 
 ```clj
-(eval-in-project {:dependencies '[[org.clojure/clojure "1.5.0"]]}
+(eval-in-project {:dependencies '[[org.clojure/clojure "1.4.0"]]}
                  '(println "hello from" *clojure-version*))
 ```
-
-In Leiningen 1.x, plugins had access to monolithic Clojure Contrib.
-This is no longer true in 2.x.
 
 ## Upgrading Existing Plugins
 
@@ -337,7 +391,7 @@ provides a compatibility shim supporting both 1.x and 2.x.
 
 Another key change is that `:source-path`, `:resources-path`,
 `:java-source-path`, and `:test-path` have changed to
-`:sources-paths`, `:resource-paths`, `:java-source-paths`, and
+`:source-paths`, `:resource-paths`, `:java-source-paths`, and
 `:test-paths`, and they should be vectors now instead of single
 strings. The old `:dev-resources` key is now just another entry to the
 `:resource-paths` vector that's only present when the `:dev` profile
@@ -392,13 +446,6 @@ Note that in most cases it's better to spin off tasks into their own
 plugin projects; using `.lein-classpath` is mainly appropriate for
 experimentation or cases when there isn't enough time to create a
 proper plugin.
-
-## Templates
-
-You can also publish templates for generating project skeletons that
-work with `lein new`. See
-[the documentation for the new task](https://github.com/Raynes/lein-newnew/)
-for details on how to build templates.
 
 ## Have Fun
 

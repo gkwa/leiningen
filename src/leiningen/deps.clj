@@ -7,46 +7,7 @@
             [cemerick.pomegranate.aether :as aether]
             [clojure.pprint :as pp]
             [clojure.java.io :as io])
-  (:import (org.sonatype.aether.resolution DependencyResolutionException)
-           (org.sonatype.aether.collection DependencyGraphTransformer)
-           (org.sonatype.aether.util.graph.transformer
-            ChainedDependencyGraphTransformer)))
-
-(defn message-for-version-range [path]
-  (str (->> path
-            (map #(if-let [dependency (.getDependency %)]
-                    (if-let [artifact (.getArtifact dependency)]
-                      (str "["
-                           (.getGroupId artifact)
-                           "/"
-                           (.getArtifactId artifact)
-                           " \""
-                           (.getVersionConstraint %)
-                           "\"]"))))
-            (remove nil?)
-            (interpose " -> ")
-            (apply str))))
-
-(def ranges (atom []))
-
-(defn- check-for-range [node parents]
-  (if-let [vc (.getVersionConstraint node)]
-    (if-not (empty? (.getRanges vc))
-      (swap! ranges conj (conj parents node))))
-  (every? #(check-for-range % (conj parents node))
-          (.getChildren node)))
-
-(defn add-no-ranges-transformer [session]
-  (.setDependencyGraphTransformer
-   session
-   (ChainedDependencyGraphTransformer.
-    (into-array DependencyGraphTransformer
-                [(reify DependencyGraphTransformer
-                   (transformGraph [self node context]
-                     (reset! ranges [])
-                     (check-for-range node [])
-                     node))
-                 (.getDependencyGraphTransformer session)]))))
+  (:import (org.sonatype.aether.resolution DependencyResolutionException)))
 
 (defn- walk-deps
   ([deps f level]
@@ -63,7 +24,8 @@
 (declare check-signature)
 
 (defn- fetch-key [signature err]
-  (if (re-find #"Can't check signature: public key not found" err)
+  (if (or (re-find #"Can't check signature: public key not found" err)
+          (re-find #"Can't check signature: No public key" err))
     (let [key (second (re-find #"using \w+ key ID (.+)" err))
           {:keys [exit]} (user/gpg "--recv-keys" "--" key)]
       (if (zero? exit)
@@ -99,11 +61,21 @@
     ;; TODO: support successful exit code only on fully-signed deps
     (println status (pr-str dep))))
 
+(def tree-command
+  "A mapping from the tree-command to the dependency key it should print a tree
+  for."
+  {":tree" :dependencies
+   ":plugin-tree" :plugins})
+
 (defn deps
   "Show details about dependencies.
 
 USAGE: lein deps :tree
-Show the full dependency tree for the current project.
+Show the full dependency tree for the current project. Each dependency is only
+shown once within a tree.
+
+USAGE: lein deps :plugin-tree
+Show the full dependency tree for the plugins in the current project.
 
 USAGE: lein deps :verify
 Check signatures of each dependency. ALPHA: subject to change.
@@ -118,26 +90,18 @@ force them to be updated, use `lein -U $TASK`."
      (deps project nil))
   ([project command]
      (try
-       (cond (= command ":tree")
+       (cond (tree-command command)
              (let [hierarchy (classpath/dependency-hierarchy
-                              :dependencies project
-                              :repository-session-fn
-                              (comp add-no-ranges-transformer
-                                    aether/repository-session))
-                   ranges (distinct (map message-for-version-range
-                                         @ranges))]
-               (when (not (empty? ranges))
-                 (println "WARNING!!! version ranges found for:")
-                 (doseq [dep-string ranges]
-                   (println dep-string))
-                 (println))
-               (walk-deps hierarchy
-                          print-dep))
+                              (tree-command command)
+                              (assoc project :pedantic?
+                                     (get project :pedantic? :warn)))]
+               (walk-deps hierarchy print-dep))
              (= command ":verify")
              (if (user/gpg-available?)
                (walk-deps (classpath/dependency-hierarchy :dependencies project)
                           (partial verify project))
-               (main/abort "Could not verify - gpg not available"))
+               (main/abort (str "Could not verify - gpg not available.\n"
+                                "See `lein help gpg` for how to setup gpg.")))
              :else (classpath/resolve-dependencies :dependencies project))
        (catch DependencyResolutionException e
          (main/abort (.getMessage e))))))

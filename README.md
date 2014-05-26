@@ -1,6 +1,6 @@
 # Leiningen
 
-<img src="http://leiningen.org/img/leiningen-banner.png"
+<img src="http://leiningen.org/img/leiningen.jpg"
  alt="Leiningen logo" title="The man himself" align="right" />
 
 > "Leiningen!" he shouted. "You're insane! They're not creatures you can
@@ -18,29 +18,26 @@ If your preferred
 has a relatively recent version of Leiningen, try that first.
 Otherwise you can install by hand:
 
-Leiningen bootstraps itself using the `lein` shell script;
-there is no separate install script. It installs its dependencies
-upon the first run on unix, so the first run will take longer.
+Leiningen bootstraps itself using the `lein` shell script; there is no
+separate install script. It handles installing its own dependencies,
+which means the first run will take longer.
 
-1. [Download the script](https://raw.github.com/technomancy/leiningen/stable/bin/lein).
-2. Place it on your `$PATH`. (I like to use `~/bin`)
-3. Set it to be executable. (`chmod 755 ~/bin/lein`)
+1. Make sure you have a Java JDK version 6 or later.
+2. [Download the script](https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein).
+3. Place it on your `$PATH`. (`~/bin` is a good choice if it is on your path.)
+4. Set it to be executable. (`chmod 755 ~/bin/lein`)
 
-There is still a lot of extant material on the Web concerning the
-older
-[Leiningen 1.x](https://raw.github.com/technomancy/leiningen/1.7.1/bin/lein)
-version, which is still available if you need to work on older
-projects that aren't compatible with 2.x yet. The
-[upgrade guide](https://github.com/technomancy/leiningen/wiki/Upgrading)
-has instructions on migrating to version 2.
+### Windows
 
-On Windows most users can get
-[the batch file](https://raw.github.com/technomancy/leiningen/stable/bin/lein.bat).
-If you have PowerShell, wget.exe or curl.exe already installed and in PATH, you
-can just run `lein self-install`, otherwise get the standalone jar from the
-[downloads page](https://github.com/technomancy/leiningen/downloads).
-If you have [Cygwin](http://www.cygwin.com/) you should be able to use
-the shell script above rather than the batch file.
+There is
+[an installer](http://leiningen-win-installer.djpowell.net/) which
+will handle downloading and placing Leiningen and its dependencies.
+
+The manual method of putting
+[the batch file](https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein.bat).
+on your `PATH` and running `lein self-install` should still work for
+most users. If you have [Cygwin](http://www.cygwin.com/) you should be
+able to use the shell script above rather than the batch file.
 
 ## Basic Usage
 
@@ -80,7 +77,7 @@ The `project.clj` file in the project root should look like this:
   :description "A project for doing things."
   :license "Eclipse Public License 1.0"
   :url "http://github.com/technomancy/myproject"
-  :dependencies [[org.clojure/clojure "1.4.0"]]
+  :dependencies [[org.clojure/clojure "1.5.1"]]
   :plugins [[lein-ring "0.4.5"]])
 ```
 
@@ -99,10 +96,11 @@ Leiningen documentation is organized as a number of guides:
 
  * [Tutorial](https://github.com/technomancy/leiningen/blob/stable/doc/TUTORIAL.md)
  * [Polyglot (e.g. Clojure/Java) projects](https://github.com/technomancy/leiningen/blob/stable/doc/MIXED_PROJECTS.md)
- * Leiningen [Profiles](https://github.com/technomancy/leiningen/blob/stable/doc/PROFILES.md)
+ * [Profiles](https://github.com/technomancy/leiningen/blob/stable/doc/PROFILES.md)
  * [Deployment & Distribution of Libraries](https://github.com/technomancy/leiningen/blob/stable/doc/DEPLOY.md)
  * [Sample project.clj](https://github.com/technomancy/leiningen/blob/stable/sample.project.clj)
  * [Writing Plugins](https://github.com/technomancy/leiningen/blob/stable/doc/PLUGINS.md)
+ * [Writing Templates](https://github.com/technomancy/leiningen/blob/stable/doc/TEMPLATES.md)
  * [FAQ](https://github.com/technomancy/leiningen/blob/stable/doc/FAQ.md)
  * [Contributing](https://github.com/technomancy/leiningen/blob/stable/CONTRIBUTING.md)
 
@@ -123,7 +121,7 @@ explains how to write plugins.
 
 ## License
 
-Source Copyright © 2009-2013 Phil Hagelberg, Alex Osborne, Dan Larkin, and
+Source Copyright © 2009-2014 Phil Hagelberg, Alex Osborne, Dan Larkin, and
 [contributors](https://github.com/technomancy/leiningen/contributors). 
 Distributed under the Eclipse Public License, the same as Clojure
 uses. See the file COPYING.

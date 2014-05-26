@@ -1,9 +1,10 @@
 (ns leiningen.core.test.eval
-  (:use [clojure.test]
-        [leiningen.core.eval])
-  (:require [clojure.java.io :as io]
+  (:require [clojure.test :refer :all]
+            [leiningen.core.eval :refer :all]
+            [clojure.java.io :as io]
             [clojure.set :as set]
             [leiningen.core.classpath :as classpath]
+            [leiningen.test.helper :as lthelper]
             [leiningen.core.project :as project])
   (:import (java.io File)))
 
@@ -18,11 +19,11 @@
 
 (deftest test-eval-in-project
   (doseq [where [:subprocess :leiningen :classloader]]
-    (let [file (File/createTempFile "lein-eval-test" nil)]
+    (let [file (File/createTempFile "lein-eval-test" "")]
       (eval-in-project (assoc project :eval-in where
                               :prep-tasks [])
-                       `(spit ~(.getPath file) "foo"))
-      (is (= "foo" (slurp file)))
+                       `(spit ~(.getPath file) (eval "{:foo \"bar\"}")))
+      (is (= "{:foo \"bar\"}" (slurp file)))
       (.delete file))))
 
 (deftest test-jvm-opts
@@ -45,3 +46,16 @@
                (contains? args "-Dhttp.proxyPort=8080")
                (contains? args "-Dhttps.proxyHost=secure-foo.com")
                (contains? args "-Dhttps.proxyPort=443"))))))
+
+(deftest test-java-agent
+  (let [p {:java-agents '[[com.newrelic.agent.java/newrelic-agent "2.18.0"
+                           :bootclasspath true]
+                          [nodisassemble "0.1.2" :options "hello"]]
+           :dependencies '[[slamhound "1.3.0"]]
+           :repositories project/default-repositories}
+        [newrelic newrelic-bootcp nodisassemble] (classpath-arg p)]
+    (is (.endsWith newrelic (lthelper/fix-path-delimiters
+                              (str "/com/newrelic/agent/java/newrelic-agent"
+                                   "/2.18.0/newrelic-agent-2.18.0.jar"))))
+    (is (re-find #"bootclasspath.*newrelic.*jar" newrelic-bootcp))
+    (is (re-find #"-javaagent:.*nodisassemble-0.1.2.jar=hello" nodisassemble))))

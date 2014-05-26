@@ -22,60 +22,98 @@
    "Built-By" (System/getProperty "user.name")
    "Build-Jdk" (System/getProperty "java.version")})
 
-(defn- manifest-entry [project manifest [k v]]
-  (cond (symbol? v) (manifest-entry project manifest [k (resolve v)])
-        (fn? v) (manifest-entry project manifest [k (v project)])
-        :else (str manifest "\n" (name k) ": " v)))
+(defn- manifest-entry [project [k v]]
+  (cond (symbol? v) (manifest-entry project [k (resolve v)])
+        (fn? v) (manifest-entry project [k (v project)])
+        :else (->> (str (name k) ": " v)
+                   (partition-all 70)  ;; Manifest spec says lines <= 72 chars
+                   (map (partial apply str))
+                   (string/join "\n ")  ;; Manifest spec says join with "\n "
+                   (format "%s\n"))))
 
 (defn ^:internal make-manifest [project]
-  (Manifest.
-   (ByteArrayInputStream.
-    (.getBytes
-     (reduce (partial manifest-entry project)
-             "Manifest-Version: 1.0"
-             (merge default-manifest (:manifest project)
-                    (if-let [main (:main project)]
-                      {"Main-Class" (.replaceAll (str main) "-" "_")})))))))
+  (->> (merge default-manifest (:manifest project)
+              {"Main-Class" (munge (str (:main project 'clojure.main)))})
+       (map (partial manifest-entry project))
+       (cons "Manifest-Version: 1.0\n")  ;; Manifest-Version line must be first
+       (string/join "")
+       .getBytes
+       ByteArrayInputStream.
+       Manifest.))
 
 (defn ^:internal manifest-map [manifest]
   (let [attrs (.getMainAttributes manifest)]
     (zipmap (map str (keys attrs)) (vals attrs))))
 
-(defn- skip-file? [file relative-path patterns]
+(defn- added-file?
+  "Returns true if the file is already added to the jar, false otherwise. Prints
+  a warning if the file is not a directory."
+  [file relative-path added-paths]
+  ;; Path may be blank if it is the root path
+  (if (or (string/blank? relative-path) (added-paths relative-path))
+    (do
+      (when-not (.isDirectory file)
+        (main/info "Warning: skipped duplicate file:" relative-path))
+      true)))
+
+(defn- skip-file?
+  "Skips the file if it doesn't exist. If the file is not the
+  root-file (specified by :path), will also skip it if it is a dotfile, emacs
+  backup file or matches an exclusion pattern."
+  [file relative-path root-file patterns]
   (or (not (.exists file))
-      (.isDirectory file)
-      (re-find #"^\.?#" (.getName file))
-      (re-find #"~$" (.getName file))
-      (some #(re-find % relative-path) patterns)))
+      (and
+       (not= file root-file)
+       (or
+        (re-find #"^\.?#" (.getName file))
+        (re-find #"~$" (.getName file))
+        (some #(re-find % relative-path) patterns)))))
 
 (defmulti ^:private copy-to-jar (fn [project jar-os acc spec] (:type spec)))
 
-(defn- trim-leading [s to-trim]
-  (let [size (.length to-trim)]
-    (if (.startsWith s to-trim)
-      (.substring s size)
-      s)))
+(defn- relativize-path
+  "Relativizes a path: Removes the root-path of a path if not already removed."
+  [path root-path]
+  (if (.startsWith path root-path)
+    (.substring path (.length root-path))
+    path))
+
+(defn- full-path ;; Q: is this a good name for this action?
+  "Appends the path string with a '/' if the file is a directory."
+  [file path]
+  (if (.isDirectory file)
+    (str path "/")
+    path))
 
 (defn- dir-string
   "Returns the file's directory as a string, or the string representation of the
   file itself if it is a directory."
   [file]
-  (if-not (. file isDirectory)
-    (str (. file getParent) "/")
+  (if-not (.isDirectory file)
+    (str (.getParent file) "/")
     (str file "/")))
 
+(defn- put-jar-entry!
+  "Adds a jar entry to the Jar output stream."
+  [jar-os file path]
+  (.putNextEntry jar-os (doto (JarEntry. path)
+                       (.setTime (.lastModified file))))
+  (when-not (.isDirectory file)
+    (io/copy file jar-os)))
+
 (defmethod copy-to-jar :path [project jar-os acc spec]
-  (when-not (acc (:path spec))
-    (let [root-file (io/file (:path spec))
-          root-dir-path (unix-path (dir-string root-file))]
-      (doseq [child (file-seq root-file)
-              :let [path (trim-leading (unix-path (str child))
-                                       root-dir-path)]]
-        (when-not (skip-file? child path (:jar-exclusions project))
-          (.putNextEntry jar-os (doto (JarEntry. path)
-                                  (.setTime (.lastModified child))))
-          (io/copy child jar-os)))))
-  (conj acc (:path spec)))
+  (let [root-file (io/file (:path spec))
+        root-dir-path (unix-path (dir-string root-file))
+        paths (for [child (file-seq root-file)
+                    :let [path (relativize-path
+                                 (full-path child (unix-path (str child)))
+                                 root-dir-path)]]
+                (when-not (or (skip-file? child path root-file
+                                          (:jar-exclusions project))
+                              (added-file? child path acc))
+                  (put-jar-entry! jar-os child path)
+                  path))]
+    (into acc paths)))
 
 (defmethod copy-to-jar :paths [project jar-os acc spec]
   (reduce (partial copy-to-jar project jar-os) acc
@@ -83,13 +121,14 @@
             {:type :path :path path})))
 
 (defmethod copy-to-jar :bytes [project jar-os acc spec]
-  (when-not (some #(re-find % (:path spec)) (:jar-exclusions project))
-    (.putNextEntry jar-os (JarEntry. (:path spec)))
-    (let [bytes (if (string? (:bytes spec))
-                  (.getBytes (:bytes spec))
-                  (:bytes spec))]
-      (io/copy (ByteArrayInputStream. bytes) jar-os)))
-  (conj acc (:path spec)))
+  (let [path (unix-path (:path spec))]
+    (when-not (some #(re-find % path) (:jar-exclusions project))
+      (.putNextEntry jar-os (JarEntry. path))
+      (let [bytes (if (string? (:bytes spec))
+                    (.getBytes (:bytes spec))
+                    (:bytes spec))]
+        (io/copy (ByteArrayInputStream. bytes) jar-os)))
+    (conj acc path)))
 
 (defmethod copy-to-jar :fn [project jar-os acc spec]
   (let [f (eval (:fn spec))
@@ -104,59 +143,106 @@
     (reduce (partial copy-to-jar project jar-os) #{} filespecs)))
 
 ;; TODO: change in 3.0; this is hideous
-(defn- filespecs [project deps-fileset]
-  (concat [{:type :bytes
-            :path (format "META-INF/maven/%s/%s/pom.xml"
-                          (:group project) (:name project))
-            :bytes (.getBytes (pom/make-pom project))}
-           {:type :bytes
-            :path (format "META-INF/maven/%s/%s/pom.properties"
-                          (:group project) (:name project))
-            :bytes (.getBytes (pom/make-pom-properties project))}
-           {:type :bytes :path (format "META-INF/leiningen/%s/%s/project.clj"
-                                       (:group project) (:name project))
-            :bytes (.getBytes (slurp (str (:root project) "/project.clj")))}
-           {:type :bytes :path "project.clj"
-            :bytes (.getBytes (slurp (str (:root project) "/project.clj")))}]
-          [{:type :path :path (:compile-path project)}
-           {:type :paths :paths (:resource-paths project)}]
-          (if-not (:omit-source project)
-            [{:type :paths :paths (:source-paths project)}
-             {:type :paths :paths (:java-source-paths project)}])
-          (:filespecs project)))
+(defn- filespecs [project]
+  (let [root-files (.list (io/file (:root project)))
+        readmes (filter (partial re-find #"^(?i)readme") root-files)
+        licenses (filter (partial re-find #"^(?i)license") root-files)
+        scope (partial format "META-INF/leiningen/%s/%s/%s"
+                       (:group project) (:name project))]
+    (concat [{:type :bytes
+              :path (format "META-INF/maven/%s/%s/pom.xml"
+                            (:group project) (:name project))
+              :bytes (.getBytes (pom/make-pom project))}
+             {:type :bytes
+              :path (format "META-INF/maven/%s/%s/pom.properties"
+                            (:group project) (:name project))
+              :bytes (.getBytes (pom/make-pom-properties project))}
+             {:type :bytes :path (scope "project.clj")
+              :bytes (.getBytes (slurp (str (:root project) "/project.clj")))}
+             {:type :bytes :path "project.clj"
+              :bytes (.getBytes (slurp (str (:root project) "/project.clj")))}]
+            (for [doc (map (partial io/file (:root project))
+                        (concat readmes licenses))
+                  :when (.isFile doc)]
+              {:type :bytes :path (scope (.getName doc))
+               :bytes (.getBytes (slurp doc))})
+            [{:type :path :path (:compile-path project)}
+             {:type :paths :paths (:resource-paths project)}]
+            (if-not (:omit-source project)
+              [{:type :paths
+                :paths (set (concat (:source-paths project)
+                                    (:java-source-paths project)))}])
+            (:filespecs project))))
 
 ;; Split out backwards-compatibility. Collapse into get-jar-filename for 3.0
 (defn get-classified-jar-filename [project classifier]
   (let [target (doto (io/file (:target-path project)) .mkdirs)
         suffix (if classifier (str "-" (name classifier) ".jar") ".jar")
-        ;; TODO: splice in version to :jar-name
         name-kw (if (= classifier :standalone) :uberjar-name :jar-name)
-        jar-name (or (project name-kw)
-                     (str (:name project) "-" (:version project) suffix))]
+        jar-name (or (project name-kw) (str (:name project) "-%s" suffix))
+        jar-name (format jar-name (:version project))]
     (str (io/file target jar-name))))
-
-(defn get-jar-filename
-  ([project uberjar?]
-     (get-classified-jar-filename project (if uberjar? :standalone)))
-  ([project] (get-jar-filename project nil)))
 
 (def whitelist-keys
   "Project keys which don't affect the production of the jar should be
 propagated to the compilation phase and not stripped out."
   [:offline? :local-repo :certificates :warn-on-reflection :mirrors])
 
+(defn- retain-whitelisted-keys
+  "Retains the whitelisted keys from the original map in the new one."
+  [new original]
+  (merge new (select-keys original whitelist-keys)))
+
 (defn- compile-main? [{:keys [main source-paths] :as project}]
   (and main (not (:skip-aot (meta main)))
        (some #(.exists (io/file % (b/path-for main))) source-paths)))
 
-;; TODO: remove or move this to uberjar for 3.0
+(def ^:private implicit-aot-warning
+  (delay
+   (main/info "Warning: specified :main without including it in :aot."
+              "\nImplicit AOT of :main will be removed in Leiningen 3.0.0."
+              "\nIf you only need AOT for your uberjar, consider adding"
+              ":aot :all into your\n:uberjar profile instead.")))
+
+(defn warn-implicit-aot [orig-project]
+  (let [project (project/merge-profiles orig-project [:uberjar])]
+    (when (and (:main project) (not (:skip-aot (meta (:main project))))
+               (not= :all (:aot project))
+               (not= [:all] (:aot project))
+               (not (some #{(:main project)} (:aot project))))
+      (force implicit-aot-warning))))
+
+;; TODO: remove for 3.0
 (defn- add-main [project given-main]
+  (warn-implicit-aot project)
   (let [project (if given-main
                   (assoc project :main (symbol given-main))
                   project)]
-    (if (and (compile-main? project) (not= :all (:aot project)))
+    (if (and (compile-main? project)
+             (not= :all (:aot project))
+             (not= [:all] (:aot project)))
       (update-in project [:aot] conj (:main project))
       project)))
+
+(defn- process-project
+  "Like update-in, but for preparing projects for (uber)jaring. f is a function
+  that will take the old project and any supplied args and return the new
+  project, but with whitelisted keys retained and with the main argument
+  inserted if provided."
+  [project main f & args]
+  (-> (apply f project args)
+      (retain-whitelisted-keys project)
+      (add-main main)))
+
+(defn- preprocess-project [project & [main]]
+  (process-project project main project/unmerge-profiles [:default]))
+
+(defn- get-jar-filename*
+  [project uberjar?]
+  (get-classified-jar-filename project (when uberjar? :standalone)))
+
+(defn get-jar-filename [project & [uberjar?]]
+  (get-jar-filename* (preprocess-project project) uberjar?))
 
 (defn classifier-jar
   "Package up all the project's classified files into a jar file.
@@ -172,10 +258,10 @@ keyword, it's looked up in :profiles before being merged."
                :target-path (.getPath (io/file target-path (name classifier))))
         project (-> (project/unmerge-profiles project [:default])
                     (project/merge-profiles [spec])
-                    (merge (select-keys project whitelist-keys)))]
+                    (retain-whitelisted-keys project))]
     (eval/prep project)
     (let [jar-file (get-classified-jar-filename project classifier)]
-      (write-jar project jar-file (filespecs project []))
+      (write-jar project jar-file (filespecs project))
       (main/info "Created" (str jar-file))
       jar-file)))
 
@@ -202,13 +288,11 @@ function in that namespace will be used as the main-class for executable jar.
 
 With an argument, the jar will be built with an alternate main."
   ([project main]
-     (let [project (-> (project/unmerge-profiles project [:default])
-                       (project/merge-profiles [:provided])
-                       (merge (select-keys project whitelist-keys))
-                       (add-main main))]
-       (eval/prep project)
-       (let [jar-file (get-jar-filename project)]
-         (write-jar project jar-file (filespecs project []))
+     (let [project (preprocess-project project main)]
+       (eval/prep
+        (process-project project main project/merge-profiles [:provided]))
+       (let [jar-file (get-jar-filename* project nil)]
+         (write-jar project jar-file (filespecs project))
          (main/info "Created" (str jar-file))
          (merge {[:extension "jar"] jar-file}
                 (classifier-jars project)))))

@@ -10,9 +10,8 @@
            javax.tools.ToolProvider))
 
 (defn- stale-java-sources
-  "Returns a lazy seq of file paths: every Java source file within
-  dirs modified since it was most recently compiled into
-  compile-path."
+  "Returns a lazy seq of file paths: every Java source file within dirs modified
+  since it was most recently compiled into compile-path."
   [dirs compile-path]
   (for [dir dirs
         ^File source (filter #(-> ^File % (.getName) (.endsWith ".java"))
@@ -23,15 +22,15 @@
         :when (>= (.lastModified source) (.lastModified compiled))]
     (.getPath source)))
 
-(def ^{:private true
-       :doc "Legacy (Lein1/Ant task) javac options that do not translate
-             to the new (JDK's javac) format as key-value pairs. For example,
-             :debug \"off\" needs to be translated to -g:none."}
-  special-ant-javac-keys [:destdir :debug :debugLevel])
+(def ^:private special-ant-javac-keys
+  "Legacy (Lein1/Ant task) javac options that do not translate to the new (JDK's
+  javac) format as key-value pairs. For example, :debug \"off\" needs to be
+  translated to -g:none."
+  [:destdir :debug :debugLevel])
 
 (defn- normalize-specials
-  "Handles legacy (Lein1/Ant task) javac options that do not translate
-   to the new (JDK's javac) format as key-value pairs"
+  "Handles legacy (Lein1/Ant task) javac options that do not translate to the
+  new (JDK's javac) format as key-value pairs."
   [{:keys [debug debugLevel]}]
   ;; debug "off"               => -g:none
   ;; debugLevel "source,lines" => -g:source-lines
@@ -42,9 +41,8 @@
       [])))
 
 (defn normalize-javac-options
-  "Converts :javac-opts in Leiningen 1 format (passed as a map) into
-   Leiningen 2 format (a vector).
-   Options in Leiningen 2 format are returned unmodified"
+  "Converts :javac-opts in Leiningen 1 format (passed as a map) into Leiningen 2
+  format (a vector). Options in Leiningen 2 format are returned unmodified."
   [opts]
   (if (map? opts)
     (let [special-opts (select-keys opts special-ant-javac-keys)
@@ -54,6 +52,9 @@
       (vec (map (comp name str) (flatten (concat specials others)))))
     opts))
 
+(defn- safe-quote [s]
+  (str "\"" (string/replace s "\\" "\\\\") "\""))
+
 ;; Tool's .run method expects the last argument to be an array of
 ;; strings, so that's what we'll return here.
 (defn- javac-options
@@ -61,11 +62,12 @@
   Result is a String java array of options."
   [project files args]
   (let [options-file (File/createTempFile ".leiningen-cmdline" nil)]
+    (.deleteOnExit options-file)
     (with-open [options-file (io/writer options-file)]
       (doto options-file
-        (.write (format "-cp %s\n" (classpath/get-classpath-string project)))
-        (.write (format "-d %s\n" (:compile-path project)))
-        (.write (string/join "\n" files))))
+        (.write (format "-cp %s\n" (safe-quote (classpath/get-classpath-string project))))
+        (.write (format "-d %s\n" (safe-quote (:compile-path project))))
+        (.write (string/join "\n" (map safe-quote files)))))
     (into-array String
                 (concat (normalize-javac-options (:javac-options project))
                         args
@@ -92,9 +94,8 @@
                     (.run compiler# nil nil nil
                           (into-array java.lang.String ~javac-opts)))
            (abort# "Compilation of Java sources(lein javac) failed.")))
-       (abort# "lein-javac: system java compiler not found; "
-               "Be sure to use java from a JDK\nrather than a JRE by"
-               " either modifying PATH or setting JAVA_CMD."))))
+       (abort# "Java compiler not found; Be sure to use java from a JDK\n"
+               "rather than a JRE by modifying PATH or setting JAVA_CMD."))))
 
 ;; We can't really control what is printed here. We're just going to
 ;; allow `.run` to attach in, out, and err to the standard streams. This
@@ -112,13 +113,15 @@
         javac-opts (vec (javac-options project files args))
         form (subprocess-form compile-path files javac-opts)]
     (when (seq files)
-      (try (eval/eval-in
-            (project/merge-profiles project [subprocess-profile])
-            form)
-           (catch Exception e
-             (if-let [exit-code (:exit-code (ex-data e))]
-               (main/exit exit-code)
-               (throw e)))))))
+      (try
+        (binding [eval/*pump-in* false]
+          (eval/eval-in
+           (project/merge-profiles project [subprocess-profile])
+           form))
+        (catch Exception e
+          (if-let [exit-code (:exit-code (ex-data e))]
+            (main/exit exit-code)
+            (throw e)))))))
 
 (defn javac
   "Compile Java source files.

@@ -17,15 +17,15 @@
 
 (defn- find-namespaces-by-regex [project nses]
   (let [avail-nses (->> (:source-paths project)
-                     (map io/file)
-                     (b/namespaces-on-classpath :classpath))]
-   (mapcat #(matching-nses % avail-nses) nses)))
+                        (map io/file)
+                        (b/namespaces-on-classpath :classpath))]
+    (mapcat #(matching-nses % avail-nses) nses)))
 
 (defn compilable-namespaces
   "Returns a seq of the namespaces that are compilable, regardless of whether
   their class files are present and up-to-date."
   [{:keys [aot source-paths] :as project}]
-  (if (= :all aot)
+  (if (or (= :all aot) (= [:all] aot))
     (b/namespaces-on-classpath :classpath (map io/file source-paths))
     (find-namespaces-by-regex project aot)))
 
@@ -36,8 +36,7 @@
   (for [namespace (compilable-namespaces project)
         :let [rel-source (b/path-for namespace)
               source (first (for [source-path (:source-paths project)
-                                  :let [file (io/file source-path rel-source)]
-                                  :when (.exists file)]
+                                  :let [file (io/file source-path rel-source)]]
                               file))]
         :when source
         :let [rel-compiled (.replaceFirst rel-source "\\.clj$" "__init.class")
@@ -45,10 +44,11 @@
         :when (>= (.lastModified source) (.lastModified compiled))]
     namespace))
 
- ;; .class file cleanup
+;; .class file cleanup
 
 (defn- package-in-project?
-  "Tests if the package found in the compile path exists as a directory in the source path."
+  "Tests if the package found in the compile path exists as a directory in the
+  source path."
   [found-path compile-path source-path]
   (.isDirectory (io/file (.replace found-path compile-path source-path))))
 
@@ -102,11 +102,20 @@
                        (blacklisted-class? project f))]
       (.delete f))))
 
+(defn compilation-specs [cli-args]
+  (if (contains? #{[:all] [":all"]} cli-args)
+    [:all]
+    (->> cli-args
+         (map #(if (string? %) (read-string %) %))
+         (sort-by (comp not regex?)))))
+
 (defn compile
   "Compile Clojure source into .class files.
 
 Uses the namespaces specified under :aot in project.clj or those given
-as command-line arguments. Use :all argument to compile everything.
+as command-line arguments. Use :all argument to compile everything. Pass
+#\"regular expressions\" to compile any matching namespaces. You may need
+to escape punctuation for your shell.
 
 This should automatically happen when required if it's configured correctly; it
 shouldn't need to be manually invoked. See the javac task as well.
@@ -125,7 +134,5 @@ Code that should run on startup belongs in a -main defn."
                 (main/abort "Compilation failed:" (.getMessage e)))
               (finally (clean-non-project-classes project))))
        (main/debug "All namespaces already AOT compiled.")))
-  ([project & namespaces]
-     (compile (assoc project :aot (if (= namespaces [":all"])
-                                    :all
-                                    (map symbol namespaces))))))
+  ([project & args]
+     (compile (assoc project :aot (compilation-specs args)))))

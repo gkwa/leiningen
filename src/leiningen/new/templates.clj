@@ -1,9 +1,9 @@
 ;; You can write a 'new' task yourself without any extra plugins like
-;; lein-newnew. What makes newnew so useful is the `templates` task for
+;; lein-newnew. What makes lein-new so useful is the `templates` task for
 ;; listing templates and this file. The primary problem with writing your
-;; own project scaffolding tools that are domain-specific is tht you
+;; own project scaffolding tools that are domain-specific is you
 ;; generally have to reimplement the same things every single time. With
-;; lein-newnew, you have this little library that your templates can use.
+;; lein-new, you have this little library that your templates can use.
 ;; It has all the things a template is likely to need:
 ;; * an easy way to generate files and namespaces
 ;; * a way to render files written with a flexible template language
@@ -12,21 +12,47 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [leiningen.core.eval :as eval]
+            [leiningen.core.user :as user]
             [leiningen.core.main :as main]
-            [stencil.core :as stencil]))
+            [stencil.core :as stencil])
+  (:import (java.util Calendar)))
 
 (defn project-name
   "Returns project name from (possibly group-qualified) name:
 
-   mygroup/myproj => myproj
-   myproj         => myproj"
+  mygroup/myproj => myproj
+  myproj         => myproj"
   [s]
   (last (string/split s #"/")))
 
+(defn fix-line-separators
+  "Replace all \\n with system specific line separators."
+  [s]
+  (let [line-sep (if (user/getenv "LEIN_NEW_UNIX_NEWLINES") "\n"
+                     (user/getprop "line.separator"))]
+    (string/replace s "\n" line-sep)))
+
+(defn slurp-to-lf
+  "Returns the entire contents of the given reader as a single string. Converts
+  all line endings to \\n."
+  [r]
+  (let [sb (StringBuilder.)]
+    (loop [s (.readLine r)]
+      (if (nil? s)
+        (str sb)
+        (do
+          (.append sb s)
+          (.append sb "\n")
+          (recur (.readLine r)))))))
+
 (defn slurp-resource
-  "Reads the contents of a resource."
+  "Reads the contents of a resource. Temporarily converts line endings in the
+  resource to \\n before converting them into system specific line separators
+  using fix-line-separators."
   [resource]
-  (-> resource io/reader slurp))
+  (if (string? resource) ; for 2.0.0 compatibility, can break in 3.0.0
+    (-> resource io/resource io/reader slurp-to-lf fix-line-separators)
+    (-> resource io/reader slurp-to-lf fix-line-separators)))
 
 (defn sanitize
   "Replace hyphens with underscores."
@@ -35,7 +61,7 @@
 
 (defn multi-segment
   "Make a namespace multi-segmented by adding another segment if necessary.
-The additional segment defaults to \"core\"."
+  The additional segment defaults to \"core\"."
   ([s] (multi-segment s "core"))
   ([s final-segment]
      (if (.contains s ".")
@@ -45,32 +71,42 @@ The additional segment defaults to \"core\"."
 (defn name-to-path
   "Constructs directory structure from fully qualified artifact name:
 
-   \"foo-bar.baz\" becomes \"foo_bar/baz\"
+  \"foo-bar.baz\" becomes \"foo_bar/baz\"
 
-   and so on. Uses platform-specific file separators."
+  and so on. Uses platform-specific file separators."
   [s]
   (-> s sanitize (string/replace "." java.io.File/separator)))
 
 (defn sanitize-ns
   "Returns project namespace name from (possibly group-qualified) project name:
 
-   mygroup/myproj  => mygroup.myproj
-   myproj          => myproj
-   mygroup/my_proj => mygroup.my-proj"
+  mygroup/myproj  => mygroup.myproj
+  myproj          => myproj
+  mygroup/my_proj => mygroup.my-proj"
   [s]
   (-> s
       (string/replace "/" ".")
       (string/replace "_" "-")))
 
+(defn group-name
+  "Returns group name from (a possibly unqualified) name:
+
+  my.long.group/myproj => my.long.group
+  mygroup/myproj       => mygroup
+  myproj               => nil"
+  [s]
+  (let [grpseq (butlast (string/split (sanitize-ns s) #"\."))]
+    (if (seq grpseq)
+      (->> grpseq (interpose ".") (apply str)))))
+
 (defn year
   "Get the current year. Useful for setting copyright years and such."
-  [] (+ (.getYear (java.util.Date.)) 1900))
+  [] (.get (Calendar/getInstance) Calendar/YEAR))
 
-;; It'd be silly to expect people to pull in stencil just to render
-;; a mustache string. We can just provide this function instead. In
-;; doing so, it is much less likely that a template author will have
-;; to pull in any external libraries. Though he is welcome to if he
-;; needs.
+;; It'd be silly to expect people to pull in stencil just to render a mustache
+;; string. We can just provide this function instead. In doing so, it is much
+;; less likely that template authors will have to pull in any external
+;; libraries. Though they are welcome to if they need.
 (def render-text stencil/render-string)
 
 ;; Templates are expected to store their mustache template files in
@@ -86,8 +122,8 @@ The additional segment defaults to \"core\"."
 ;; render function will always know.
 (defn renderer
   "Create a renderer function that looks for mustache templates in the
-   right place given the name of your template. If no data is passed, the
-   file is simply slurped and the content returned unchanged."
+  right place given the name of your template. If no data is passed, the
+  file is simply slurped and the content returned unchanged."
   [name]
   (fn [template & [data]]
     (let [path (string/join "/" ["leiningen" "new" (sanitize name) template])]
@@ -107,6 +143,7 @@ The additional segment defaults to \"core\"."
   (io/file name (render-text path data)))
 
 (def ^{:dynamic true} *dir* nil)
+(def ^{:dynamic true} *force?* false)
 
 ;; A template, at its core, is meant to generate files and directories that
 ;; represent a project. This is our way of doing that. `->files` is basically
@@ -121,18 +158,24 @@ The additional segment defaults to \"core\"."
 ;; in them, so it is all transparent unless you need it.
 (defn ->files
   "Generate a file with content. path can be a java.io.File or string.
-   It will be turned into a File regardless. Any parent directories will
-   be created automatically. Data should include a key for :name so that
-   the project is created in the correct directory"
+  It will be turned into a File regardless. Any parent directories will be
+  created automatically. Data should include a key for :name so that the project
+  is created in the correct directory."
   [{:keys [name] :as data} & paths]
   (let [dir (or *dir*
-                (.getPath (io/file (System/getProperty "leiningen.original.pwd") name)))]
-    (if (or *dir* (.mkdir (io/file dir)))
+                (-> (System/getProperty "leiningen.original.pwd")
+                    (io/file name) (.getPath)))]
+    (if (or (.mkdir (io/file dir)) *force?*)
       (doseq [path paths]
         (if (string? path)
           (.mkdirs (template-path dir path data))
-          (let [[path content] path
-                path (template-path dir path data)]
+          (let [[path content & options] path
+                path (template-path dir path data)
+                options (apply hash-map options)]
             (.mkdirs (.getParentFile path))
-            (io/copy content (io/file path)))))
-      (println "Could not create directory " dir ". Maybe it already exists?"))))
+            (io/copy content (io/file path))
+            (when (:executable options)
+              (.setExecutable path true)))))
+      (main/info (str "Could not create directory " dir
+                      ". Maybe it already exists?"
+                      "  See also :force or --force")))))

@@ -10,11 +10,12 @@
            (java.util UUID)))
 
 (defn install
-  "Install current project to the local repository."
+  "Install jar and pom to the local repository; typically ~/.m2."
   [project]
   (when (not (or (:install-releases? project true)
                  (pom/snapshot? project)))
-    (main/abort "Can't install release artifacts when :install-releases? is set to false."))
+    (main/abort "Can't install release artifacts when :install-releases?"
+                "is set to false."))
   (let [jarfiles (jar/jar project)
         pomfile (pom/pom project)
         local-repo (:local-repo project)]
@@ -23,4 +24,6 @@
                    (:version project)]
      :artifact-map jarfiles
      :pom-file (io/file pomfile)
-     :local-repo local-repo)))
+     :local-repo local-repo)
+    (main/info (str "Installed jar and pom into " (if local-repo
+                                                    local-repo "local repo") "."))))

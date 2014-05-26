@@ -1,3 +1,34 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**  *generated with [DocToc](http://doctoc.herokuapp.com/)*
+
+- [Tutorial](#tutorial)
+	- [What This Tutorial Covers](#what-this-tutorial-covers)
+	- [Getting Help](#getting-help)
+	- [Leiningen Projects](#leiningen-projects)
+	- [Creating a Project](#creating-a-project)
+		- [Directory Layout](#directory-layout)
+		- [Filename-to-Namespace Mapping Convention](#filename-to-namespace-mapping-convention)
+	- [project.clj](#projectclj)
+	- [Dependencies](#dependencies)
+		- [Overview](#overview)
+		- [Artifact IDs, Groups, and Versions](#artifact-ids-groups-and-versions)
+		- [Snapshot Versions](#snapshot-versions)
+		- [Repositories](#repositories)
+		- [Checkout Dependencies](#checkout-dependencies)
+		- [Search](#search)
+	- [Running Code](#running-code)
+	- [Tests](#tests)
+	- [Profiles](#profiles)
+	- [What to do with it](#what-to-do-with-it)
+		- [Uberjar](#uberjar)
+		- [Framework (Uber)jars](#framework-uberjars)
+		- [Server-side Projects](#server-side-projects)
+		- [Publishing Libraries](#publishing-libraries)
+	- [That's It!](#thats-it!)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # Tutorial
 
 Leiningen is for automating Clojure projects without setting your hair on fire.
@@ -58,7 +89,7 @@ Leiningen about things like
 and more.
 
 Most Leiningen tasks only make sense in the context of a project. Some
-(for example, `repl` or `help`) can also from any directory.
+(for example, `repl` or `help`) can also be called from any directory.
 
 Next let's take a look at how projects are created.
 
@@ -78,8 +109,10 @@ Generating a new project is easy:
     ./.gitignore
     ./doc
     ./doc/intro.md
+    ./LICENSE
     ./project.clj
     ./README.md
+    ./resources
     ./src
     ./src/my_stuff
     ./src/my_stuff/core.clj
@@ -120,8 +153,10 @@ Your `project.clj` file will start off looking something like this:
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :dependencies [[org.clojure/clojure "1.4.0"]]
-  :main my-stuff.core)
+  :dependencies [[org.clojure/clojure "1.5.1"]]
+  :main ^:skip-aot my-stuff.core
+  :target-path "target/%s"
+  :profiles {:uberjar {:aot :all}})
 ```
 
 If you don't fill in the `:description` with a short sentence, your
@@ -149,25 +184,37 @@ Published JVM libraries have *identifiers* (artifact group, artifact id) and
 ### Artifact IDs, Groups, and Versions
 
 You can [search Clojars](http://clojars.org/search?q=clj-http) using
-its web interface or via `lein search $TERM`. On the page for
-`clj-http` it shows this:
+its web interface or via `lein search $TERM`. On the Clojars page for
+`clj-http` at the time of this writing it shows this:
 
-    [clj-http "0.5.5"]
+    [clj-http "0.9.1"]
 
-There are two different ways of specifying a dependency on the latest
-stable version of the `clj-http` library, one in Leiningen format
-shown above and one in Maven format. We'll skip the Maven one for now,
-though you'll need to learn to read it for Java libraries from
-[Central](http://search.maven.org). You can copy the Leiningen version
-directly into the `:dependencies` vector in `project.clj`.
+It also shows the Maven syntax for dependencies, which we'll skip for
+now, though you'll need to learn to read it when looking for Java
+libraries from [Central](http://search.maven.org). You can copy the
+Leiningen version directly into the `:dependencies` vector in
+`project.clj`.  So for instance, if you change the `:dependencies`
+line in the example `project.clj` above to
+
+```clj
+:dependencies [[org.clojure/clojure "1.5.1"]
+               [clj-http "0.9.1"]]
+```
+
+Leiningen will automatically download the `clj-http` jar and make sure
+it is on your classpath. If you want to explicitly tell lein to
+download new dependencies, you can do so with `lein deps`, but it will
+happen on-demand if you don't.
 
 Within the vector, "clj-http" is referred to as the "artifact id".
-"0.5.5" is the version. Some libraries will also have "group ids",
+"0.9.1" is the version. Some libraries will also have "group ids",
 which are displayed like this:
 
-    [com.cedarsoft.utils.legacy/hibernate "1.3.4"]
+```clj
+[com.cedarsoft.utils.legacy/hibernate "1.3.4"]
+```
 
-The group-id is the part before the slash. Especially for Java
+The group id is the part before the slash. Especially for Java
 libraries, it's often a reversed domain name. Clojure libraries often
 use the same group-id and artifact-id (as with clj-http), in which case
 you can omit the group-id. If there is a library that's part of a
@@ -256,9 +303,37 @@ dependencies of a checkout project you will still have to run `lein
 install` and restart your repl; it's just that source changes will be
 picked up immediately.
 
+After you've updated `:dependencies`, `lein` will still need to be able
+to find the library in some repository like clojars or your `~/.m2`
+directory.  If `lein` complains that it could not find the library
+artifact, you can install it locally by running `lein install` in the
+checkout dependency project directory.
+
 Checkouts are an opt-in feature; not everyone who is working on the
 project will have the same set of checkouts, so your project should
 work without checkouts before you push or merge.
+
+### Search
+
+Leiningen supports searching remote Maven repositories for matching
+jars with the command `lein search $TERM`. The first time `lein search`
+is run, a set of indices are downloaded. Once this is finished, the query
+is evaluated as a Lucene search. This allows for simple string matching
+or strings prefixed with one of the following operators:
+
+  * `artifact-id`, `artifact\_id`, `id`, `a`
+  * `group-id`, `group\_id`, `group`, `g`
+  * `description`, `desc`, `d`
+
+These prefixes allow you to execute more advanced queries such as:
+
+    $ lein search clojure
+    $ lein search description:crawl
+    $ lein search group:clojurewerkz
+    $ lein search \"Riak client\"
+
+`lein search` also accepts a second, optional parameter for fetching
+successive pages, e.g. `lein search clojure 2`.
 
 ## Running Code
 
@@ -266,19 +341,15 @@ Enough setup; let's see some code running. Start with a REPL
 (read-eval-print loop):
 
     $ lein repl
-    nREPL server started on port 40612
-    Welcome to REPL-y!
-    Clojure 1.4.0
-        Exit: Control+D or (exit) or (quit)
-    Commands: (user/help)
+    nREPL server started on port 55568 on host 127.0.0.1 - nrepl://127.0.0.1:55568
+    REPL-y 0.3.0
+    Clojure 1.5.1
         Docs: (doc function-name-here)
               (find-doc "part-of-name-here")
       Source: (source function-name-here)
-              (user/sourcery function-name-here)
      Javadoc: (javadoc java-object-or-class-here)
-    Examples from clojuredocs.org: [clojuredocs or cdoc]
-              (user/clojuredocs name-here)
-              (user/clojuredocs "ns-here" "name-here")
+        Exit: Control+D or (exit) or (quit)
+     Results: Stored in vars *1, *2, *3, an exception in *e
 
     user=>
 
@@ -302,47 +373,8 @@ to run in the context of your project. Since we've added `clj-http` to
 The call to `-main` shows both println output ("Hello, World!") and
 the return value (nil) together.
 
-Built-in documentation is available via `doc`, while `clojuredocs`
-offers more thorough examples from the
-[ClojureDocs](http://clojuredocs.org) site:
-
-    user=> (doc reduce)
-    -------------------------
-    clojure.core/reduce
-    ([f coll] [f val coll])
-      f should be a function of 2 arguments. If val is not supplied,
-      returns the result of applying f to the first 2 items in coll, then
-      applying f to that result and the 3rd item, etc. If coll contains no
-      items, f must accept no arguments as well, and reduce returns the
-      result of calling f with no arguments.  If coll has only 1 item, it
-      is returned and f is not called.  If val is supplied, returns the
-      result of applying f to val and the first item in coll, then
-      applying f to that result and the 2nd item, etc. If coll contains no
-      items, returns val and f is not called.
-
-    user=> (user/clojuredocs pprint)
-    Loading clojuredocs-client...
-    ========== vvv Examples ================
-      user=> (def *map* (zipmap
-                          [:a :b :c :d :e]
-                          (repeat
-                            (zipmap [:a :b :c :d :e]
-                              (take 5 (range))))))
-      #'user/*map*
-      user=> *map*
-      {:e {:e 4, :d 3, :c 2, :b 1, :a 0}, :d {:e 4, :d 3, :c 2, :b 1, [...]}}
-
-      user=> (clojure.pprint/pprint *map*)
-      {:e {:e 4, :d 3, :c 2, :b 1, :a 0},
-       :d {:e 4, :d 3, :c 2, :b 1, :a 0},
-       :c {:e 4, :d 3, :c 2, :b 1, :a 0},
-       :b {:e 4, :d 3, :c 2, :b 1, :a 0},
-       :a {:e 4, :d 3, :c 2, :b 1, :a 0}}
-      nil
-    ========== ^^^ Examples ================
-    1 example found for clojure.pprint/pprint
-
-You can even examine the source of functions:
+Built-in documentation is available via `doc`, and you can examine the
+source of functions with `source`:
 
     user=> (source my-stuff.core/-main)
     (defn -main
@@ -368,6 +400,11 @@ process to exit before launching your project's JVM.
 
     $ lein trampoline run -m my-stuff.server 5000
 
+If you have any Java to be compiled in `:java-source-paths` or Clojure
+namespaces listed in `:aot`, they will always be compiled before
+Leiningen runs any other code, via any `run`, `repl`,
+etc. invocations.
+
 ## Tests
 
 We haven't written any tests yet, but we can run the failing tests
@@ -375,19 +412,22 @@ included from the project template:
 
     $ lein test
 
-    lein test my.test.stuff
+    lein test my-stuff.core-test
 
-    FAIL in (a-test) (stuff.clj:7)
+    lein test :only my-stuff.core-test/a-test
+
+    FAIL in (a-test) (core_test.clj:7)
     FIXME, I fail.
     expected: (= 0 1)
       actual: (not (= 0 1))
 
     Ran 1 tests containing 1 assertions.
     1 failures, 0 errors.
+    Tests failed.
 
 Once we fill it in the test suite will become more useful. Sometimes
 if you've got a large test suite you'll want to run just one or two
-namespaces at a time; `lein test my.test.stuff` will do that. You
+namespaces at a time; `lein test my-stuff.core-test` will do that. You
 also might want to break up your tests using test selectors; see `lein
 help test` for more details.
 
@@ -406,6 +446,24 @@ file will remain in memory, making it easy to miss problems arising
 from missing functions (often referred to as "getting
 slimed"). Because of this it's advised to do a `lein test` run with a
 fresh instance periodically in any case, perhaps before you commit.
+
+## Profiles
+
+Profiles are used to add various things into your project map in
+different contexts. For instance, during `lein test` runs, the
+contents of the `:test` profile, if present, will be merged into your
+project map. You can use this to enable configuration that should only
+be applied during test runs, either by adding directories containing
+config files to your classpath via `:resource-paths` or by other
+means. See `lein help profiles` for more details.
+
+Unless you tell it otherwise, Leiningen will merge the default set of
+profiles into the project map. This includes user-wide settings from
+your `:user` profile, the `:dev` profile from `project.clj` if
+present, and the built-in `:base` profile which contains dev tools
+like nREPL and optimizations which help startup time at the expense of
+runtime performance. Never benchmark with the default profiles. (See
+the FAQ entry for "tiered compilation")
 
 ## What to do with it
 
@@ -430,7 +488,7 @@ for things like specific web technologies or other project types.
 The simplest thing to do is to distribute an uberjar. This is a single
 standalone executable jar file most suitable for giving to
 nontechnical users. For this to work you'll need to specify a
-namespace as your `:main` in `project.clj` and ensure it's also AOT
+namespace as your `:main` in `project.clj` and ensure it's also AOT (Ahead Of Time)
 compiled by adding it to `:aot`. By this point our `project.clj` file
 should look like this:
 
@@ -442,7 +500,7 @@ should look like this:
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.3.0"]
                  [org.apache.lucene/lucene-core "3.0.2"]
-                 [clj-http "0.4.1"]]
+                 [clj-http "0.9.1"]]
   :profiles {:dev {:dependencies [[ring/ring-devel "1.2.0"]]}}
   :test-selectors {:default (complement :integration)
                   :integration :integration
@@ -472,7 +530,7 @@ Now we're ready to generate your uberjar:
     Compilation succeeded.
     Created /home/phil/src/leiningen/my-stuff/target/my-stuff-0.1.0-SNAPSHOT.jar
     Including my-stuff-0.1.0-SNAPSHOT.jar
-    Including clj-http-0.4.1.jar
+    Including clj-http-0.9.1.jar
     Including clojure-1.3.0.jar
     Including lucene-core-3.0.2.jar
     Created /home/phil/src/leiningen/my-stuff/target/my-stuff-0.1.0-SNAPSHOT-standalone.jar
@@ -547,28 +605,40 @@ things beyond uberjars, server-side deployments are so varied that they
 are better-handled using plugins rather than tasks that are built-in
 to Leiningen itself.
 
-If you do end up involving Leiningen in production via something like
-`lein trampoline run`, it's very important to ensure you take steps to
-freeze all the dependencies before deploying, otherwise it could be
-easy to end up with
-[unrepeatable deployments](https://github.com/technomancy/leiningen/wiki/Repeatability).
-Consider including `~/.m2/repository` in your unit of deployment along
-with your project code. It's recommended to use Leiningen to create a
-deployable artifact in a continuous integration setting. For example,
-you could have a [Jenkins](http://jenkins-ci.org) CI server run your
-project's full test suite, and if it passes, upload a tarball to S3.
-Then deployment is just a matter of pulling down and extracting the
-known-good tarball on your production servers.
+It's possible to involve Leiningen during production, but there are
+many subtle gotchas to that approach; it's strongly recommended to use
+an uberjar if you can. If you need to launch with the `run` task, you
+should use `lein trampoline run` in order to save memory, otherwise
+Leiningen's own JVM will stay up and consume unnecessary memory.
 
-Also remember that the `user`, `dev`, and `default` profiles are
-included by default, which is not suitable for production. Using
-`lein trampoline with-profile production run -m myapp.main` is
+In addition it's very important to ensure you take steps to freeze all
+the dependencies before deploying, otherwise it could be easy to end
+up with
+[unrepeatable deployments](https://github.com/technomancy/leiningen/wiki/Repeatability).
+Consider including `~/.m2/repository` in your unit of deployment
+(tarball, .deb file, etc) along with your project code. It's
+recommended to use Leiningen to create a deployable artifact in a
+continuous integration setting. For example, you could have a
+[Jenkins](http://jenkins-ci.org) CI server run your project's full
+test suite, and if it passes, upload a tarball to S3.  Then deployment
+is just a matter of pulling down and extracting the known-good tarball
+on your production servers. Simply launching Leiningen from a checkout
+on the server will work for the most basic deployments, but as soon as
+you get a number of servers you run the risk of running with a
+heterogeneous cluster since you're not guaranteed that each machine
+will be running with the exact same codebase.
+
+Also remember that the default profiles are included unless you
+specify otherwise, which is not suitable for production. Using `lein
+trampoline with-profile production run -m myapp.main` is
 recommended. By default the production profile is empty, but if your
 deployment includes the `~/.m2/repository` directory from the CI run
 that generated the tarball, then you should add its path as
 `:local-repo` along with `:offline? true` to the `:production`
 profile. Staying offline prevents the deployed project from diverging
 at all from the version that was tested in the CI environment.
+
+Given these pitfalls, it's best to use an uberjar if possible.
 
 ### Publishing Libraries
 

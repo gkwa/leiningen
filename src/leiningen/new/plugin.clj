@@ -1,9 +1,10 @@
 (ns leiningen.new.plugin
-  (:use [leiningen.new.templates :only [renderer sanitize year ->files]]))
+  (:require [leiningen.new.templates :refer [renderer sanitize year ->files]]
+            [leiningen.core.main :as main]))
 
 (defn plugin
   "A leiningen plugin project template."
-  [name]
+  [^String name]
   (let [render (renderer "plugin")
         unprefixed (if (.startsWith name "lein-")
                      (subs name 5)
@@ -12,9 +13,10 @@
               :unprefixed-name unprefixed
               :sanitized (sanitize unprefixed)
               :year (year)}]
-    (println (str "Generating a fresh Leiningen plugin called " name "."))
+    (main/info (str "Generating a fresh Leiningen plugin called " name "."))
     (->files data
              ["project.clj" (render "project.clj" data)]
              ["README.md" (render "README.md" data)]
              [".gitignore" (render "gitignore" data)]
-             ["src/leiningen/{{sanitized}}.clj" (render "name.clj" data)])))
+             ["src/leiningen/{{sanitized}}.clj" (render "name.clj" data)]
+             ["LICENSE" (render "LICENSE" data)])))
